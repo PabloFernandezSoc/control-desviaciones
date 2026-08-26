@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* Barra de progreso de las notificaciones (ver components/Toast.tsx). */
+@keyframes toast-progress {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
+.toast-progress {
+  animation-name: toast-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-progress { animation: none; width: 100%; }
+}

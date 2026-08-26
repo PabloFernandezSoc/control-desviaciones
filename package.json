@@ -1,0 +1,32 @@
+{
+  "name": "control-desviaciones",
+  "private": true,
+  "version": "0.9.3",
+  "type": "module",
+  "description": "Detector de desviaciones comerciales y de costos sobre servicios de BIT - LYD Cargo",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "build:standalone": "vite build && node scripts/build-standalone.mjs",
+    "preview": "vite preview",
+    "verify": "tsx scripts/verificar-integracion.ts",
+    "lint": "tsc --noEmit",
+    "check": "npm run lint && npm run verify",
+    "clean": "rm -rf dist dist-standalone"
+  },
+  "dependencies": {
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  }
+}
