@@ -342,6 +342,73 @@ prueba('un servicio sin fecha utilizable se cuenta y se avisa', () => {
 });
 
 // ---------------------------------------------------------------------------
+console.log('\nFilas planas con id de extracosto (forma real del reporte)');
+// ---------------------------------------------------------------------------
+
+/**
+ * El reporte llega plano: por cada servicio, una fila es el flete y las demás
+ * son extracostos, unidas por el id de servicio. Sólo los extracostos traen su
+ * propio id.
+ */
+const PLANO = [
+  { ServicioID: '20658', ExtraCostoID: '',     NombreCliente: 'CONTROL TRADE LOGISTICS SPA', Ejecutiva: 'P. Fernández', EstadoServicio: 'EN CURSO', FechaServicio: '2026-07-04', TotalVenta: '1.200.000', TotalCosto: '800.000', Concepto: 'Flete' },
+  { ServicioID: '20658', ExtraCostoID: '9001', NombreCliente: 'CONTROL TRADE LOGISTICS SPA', Ejecutiva: 'P. Fernández', EstadoServicio: 'EN CURSO', FechaServicio: '2026-07-04', TotalVenta: '150.000',   TotalCosto: '100.000', Concepto: 'Almacenaje' },
+  { ServicioID: '20658', ExtraCostoID: '9002', NombreCliente: 'CONTROL TRADE LOGISTICS SPA', Ejecutiva: 'P. Fernández', EstadoServicio: 'EN CURSO', FechaServicio: '2026-07-04', TotalVenta: '80.000',    TotalCosto: '60.000',  Concepto: 'Cuadrilla' },
+  // El flete llega DESPUÉS de sus extracostos: el orden no debe importar.
+  { ServicioID: '20659', ExtraCostoID: '9003', NombreCliente: 'INVERSIONES BPM SPA', Ejecutiva: 'M. Rojas', EstadoServicio: 'FINALIZADO', FechaServicio: '2026-07-06', TotalVenta: '50.000',  TotalCosto: '30.000', Concepto: 'Sobrestadía' },
+  { ServicioID: '20659', ExtraCostoID: '',     NombreCliente: 'INVERSIONES BPM SPA', Ejecutiva: 'M. Rojas', EstadoServicio: 'FINALIZADO', FechaServicio: '2026-07-06', TotalVenta: '900.000', TotalCosto: '600.000', Concepto: 'Flete' },
+];
+
+const mapeoPlano = autoMapear(PLANO).mapeo;
+
+prueba('detecta la columna del id de extracosto', () => {
+  assert.equal(mapeoPlano.extracostoId, 'ExtraCostoID');
+  assert.equal(mapeoPlano.idServicio, 'ServicioID');
+});
+
+prueba('agrupa las filas planas en un servicio por id', () => {
+  const r = construirServicios(PLANO, mapeoPlano);
+  assert.equal(r.servicios.length, 2, 'cinco filas -> dos servicios');
+  assert.equal(r.filasExtra, 3);
+  assert.equal(r.huerfanos, 0);
+});
+
+prueba('la fila sin id de extracosto es el flete, venga en la posición que venga', () => {
+  const r = construirServicios(PLANO, mapeoPlano);
+  const s2 = r.servicios.find((x) => x.id === '20659')!;
+  const flete = s2.lineas.find((l) => l.codigo === 'FLETE')!;
+  assert.equal(flete.valor, 900000, 'el flete es la fila sin ExtraCostoID, aunque venga segunda');
+});
+
+prueba('los totales suman flete + extracostos, sin duplicar', () => {
+  const r = construirServicios(PLANO, mapeoPlano);
+  const s1 = r.servicios.find((x) => x.id === '20658')!;
+  const venta = s1.lineas.filter((l) => l.tipo === 'venta').reduce((a, l) => a + l.valor, 0);
+  const costo = s1.lineas.filter((l) => l.tipo === 'costo').reduce((a, l) => a + l.valor, 0);
+  assert.equal(venta, 1200000 + 150000 + 80000);
+  assert.equal(costo, 800000 + 100000 + 60000);
+  assert.equal(s1.lineas.filter((l) => l.tipo === 'venta').length, 3);
+});
+
+prueba('las líneas se identifican con el id real del extracosto', () => {
+  const r = construirServicios(PLANO, mapeoPlano);
+  const s1 = r.servicios.find((x) => x.id === '20658')!;
+  assert.ok(s1.lineas.some((l) => l.id.includes('9001')));
+  assert.ok(s1.lineas.some((l) => l.id.includes('9002')));
+});
+
+prueba('un id de extracosto en cero cuenta como flete, no como extra', () => {
+  const conCero = [
+    { ServicioID: 'A', ExtraCostoID: '0', NombreCliente: 'X', FechaServicio: '2026-07-01', TotalVenta: '100', Concepto: 'Flete' },
+    { ServicioID: 'A', ExtraCostoID: '7', NombreCliente: 'X', FechaServicio: '2026-07-01', TotalVenta: '20',  Concepto: 'Almacenaje' },
+  ];
+  const m = autoMapear(conCero).mapeo;
+  const r = construirServicios(conCero, m);
+  assert.equal(r.servicios.length, 1);
+  assert.equal(r.filasExtra, 1, 'sólo la fila con id 7 es extracosto');
+});
+
+// ---------------------------------------------------------------------------
 console.log('\nNormalización de estados');
 // ---------------------------------------------------------------------------
 

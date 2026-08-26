@@ -90,22 +90,34 @@ export function normalizarModalidad(v: unknown): ServiceModality | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * `true` extracosto, `false` fila base, `null` indeterminado (se resuelve por
- * posición dentro del grupo).
+ * `true` extracosto, `false` fila del flete, `null` indeterminado (se resuelve
+ * por posición dentro del grupo).
+ *
+ * El reporte llega como filas planas: por cada servicio, una fila es el flete y
+ * las demás son sus extracostos, unidas por el id de servicio. El discriminador
+ * fiable es el id de extracosto: la fila del flete no lo trae.
  */
 function esExtra(fila: FilaCruda, mapeo: MapeoCampos): boolean | null {
-  // La marca que puso `aplanar` es la señal más confiable.
+  // 1. El id de extracosto: sólo lo llevan las filas de extracosto.
+  if (mapeo.extracostoId) {
+    const id = texto(fila[mapeo.extracostoId]);
+    // Un "0" es el relleno habitual para "no aplica", no un id real.
+    return id !== '' && id !== '0';
+  }
+
+  // 2. La marca que puso `aplanar` cuando los extracostos venían anidados.
   const marca = texto(fila[TIPO_FILA]);
   if (marca === 'EXTRACOSTO') return true;
   if (marca === 'SERVICIO') return false;
 
+  // 3. Una columna que nombre el tipo de fila.
   if (mapeo.tipoFila) {
     const v = texto(fila[mapeo.tipoFila]).toLowerCase();
     if (/extra|adicional|gasto/.test(v)) return true;
-    if (/servicio|principal|base|cabecera/.test(v)) return false;
+    if (/servicio|principal|base|cabecera|flete/.test(v)) return false;
   }
 
-  // Un extracosto no repite el cliente.
+  // 4. Último recurso: un extracosto no suele repetir el cliente.
   if (mapeo.cliente && texto(fila[mapeo.cliente]) === '') return true;
 
   return null;
@@ -153,10 +165,12 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
   for (const [id, delGrupo] of grupos) {
     const marcas = delGrupo.map((f) => esExtra(f, mapeo));
 
+    // La fila del flete es la que no está marcada como extracosto, venga en la
+    // posición que venga dentro del grupo.
     let idxBase = marcas.findIndex((m) => m === false);
     if (idxBase < 0) idxBase = marcas.findIndex((m) => m === null);
     if (idxBase < 0) {
-      // Sólo extracostos: no hay servicio al que colgarlos.
+      // Sólo extracostos: no hay flete al que colgarlos.
       huerfanos += delGrupo.length;
       filasExtra += delGrupo.length;
       continue;
@@ -214,12 +228,14 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
 
       const concepto = texto(leer(fila, 'concepto')) || 'Sin concepto';
       const codigo = codigoDeConcepto(concepto);
+      // Se prefiere el id real del extracosto sobre el índice de la fila.
+      const idExtra = texto(leer(fila, 'extracostoId')) || String(i);
       const venta = aNumero(leer(fila, 'venta'));
       const costo = aNumero(leer(fila, 'costo'));
 
       if (venta !== 0) {
         lineas.push({
-          id: `${id}-extra-v-${i}`,
+          id: `${id}-extra-v-${idExtra}`,
           codigo,
           nombreConcepto: concepto,
           tipo: 'venta',
@@ -229,7 +245,7 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       }
       if (costo !== 0) {
         lineas.push({
-          id: `${id}-extra-c-${i}`,
+          id: `${id}-extra-c-${idExtra}`,
           codigo: `${codigo}_COSTO`,
           nombreConcepto: `${concepto} (costo)`,
           tipo: 'costo',

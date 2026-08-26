@@ -95,6 +95,11 @@ export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
 
   /** Descarga la respuesta cruda: sirve para revisarla fuera de la app. */
   const descargarJson = () => {
+    if (respuestaCruda == null) {
+      // Antes esto exportaba el literal `null` sin avisar.
+      window.alert('Todavía no hay una respuesta que descargar. Lee la API primero.');
+      return;
+    }
     try {
       const blob = new Blob([JSON.stringify(respuestaCruda, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);

@@ -27,7 +27,7 @@ import { SettingsView } from './components/SettingsView';
 import { FieldMappingView } from './components/FieldMappingView';
 import { ToastProvider, useToast } from './components/Toast';
 import { InfoColumna, MapeoCampos, loadMapeo, saveMapeo } from './services/fieldMapping';
-import { ApiConfig, loadApiConfig, saveApiConfig, leerSnapshot } from './services/apiClient';
+import { ApiConfig, loadApiConfig, saveApiConfig, getUltimaRespuesta } from './services/apiClient';
 import { Complementos, loadComplementos, saveComplementos } from './services/complementos';
 import {
   OrigenDatos,
@@ -267,8 +267,21 @@ function AppShell() {
   }, [agreements]);
 
   // Open Service Modal
+  /**
+   * Todos los servicios analizados, con o sin matriz comercial.
+   *
+   * La bandeja lista desviaciones de ambos grupos —las reglas generales se
+   * evalúan igual sin matriz—, así que la ficha y la navegación tienen que
+   * poder alcanzarlos a todos. Buscar sólo entre los evaluados hacía que las
+   * filas de clientes sin matriz no abrieran nada, sin decir por qué.
+   */
+  const allServices = useMemo(
+    () => [...evaluatedServices, ...unmatchedServices],
+    [evaluatedServices, unmatchedServices],
+  );
+
   const handleSelectDeviation = (dev: Deviation) => {
-    const srv = evaluatedServices.find(s => s.id === dev.servicioId);
+    const srv = allServices.find(s => s.id === dev.servicioId);
     if (srv) {
       setSelectedService(srv);
       setSelectedDeviation(dev);
@@ -289,14 +302,14 @@ function AppShell() {
   // Drawer Next/Prev navigation
   const handleNavigateModal = (direction: 'next' | 'prev') => {
     if (!selectedService) return;
-    const idx = evaluatedServices.findIndex(s => s.id === selectedService.id);
+    const idx = allServices.findIndex(s => s.id === selectedService.id);
     if (idx === -1) return;
 
     let targetIdx = direction === 'next' ? idx + 1 : idx - 1;
-    if (targetIdx < 0) targetIdx = evaluatedServices.length - 1;
-    if (targetIdx >= evaluatedServices.length) targetIdx = 0;
+    if (targetIdx < 0) targetIdx = allServices.length - 1;
+    if (targetIdx >= allServices.length) targetIdx = 0;
 
-    const nextSrv = evaluatedServices[targetIdx];
+    const nextSrv = allServices[targetIdx];
     setSelectedService(nextSrv);
     const dev = deviations.find(d => d.servicioId === nextSrv.id && (d.estado === 'abierta' || d.estado === 'en_revision' || d.estado === 'reabierta'));
     setSelectedDeviation(dev || null);
@@ -418,7 +431,7 @@ function AppShell() {
               filas={filasRecibidas}
               servicios={engineInstance.getServices().length}
               latenciaMs={latenciaMs}
-              respuestaCruda={leerSnapshot()?.d ?? null}
+              respuestaCruda={getUltimaRespuesta()}
               onPegarJson={handlePegarJson}
             />
           )}

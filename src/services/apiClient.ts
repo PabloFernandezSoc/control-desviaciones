@@ -96,14 +96,36 @@ export interface Snapshot {
   d: unknown;
 }
 
-export function guardarSnapshot(crudo: unknown): void {
+/**
+ * Última respuesta, en memoria.
+ *
+ * `localStorage` tiene una cuota de pocos MB y un reporte de varios miles de
+ * servicios no cabe. Antes eso fallaba en silencio: la copia local nunca se
+ * escribía y lo que dependía de ella —descargar la respuesta, reprocesar con
+ * otro mapeo— se quedaba sin datos. La memoria es la fuente de la sesión; el
+ * almacenamiento es sólo para sobrevivir a un refresco.
+ */
+let ultimaRespuesta: unknown = null;
+
+export function getUltimaRespuesta(): unknown {
+  return ultimaRespuesta ?? leerSnapshot()?.d ?? null;
+}
+
+/** Guarda la respuesta. Devuelve `false` si no cupo en el almacenamiento. */
+export function guardarSnapshot(crudo: unknown): boolean {
+  ultimaRespuesta = crudo;
   try {
     localStorage.setItem(
       STORAGE_KEY_SNAPSHOT,
       JSON.stringify({ t: new Date().toISOString(), d: crudo } satisfies Snapshot),
     );
+    return true;
   } catch {
-    // Una respuesta muy grande puede exceder la cuota: no es motivo para fallar.
+    // No cabe: se sigue con la copia en memoria y quien llama lo informa.
+    try {
+      localStorage.removeItem(STORAGE_KEY_SNAPSHOT);
+    } catch { /* nada que hacer */ }
+    return false;
   }
 }
 
@@ -119,6 +141,7 @@ export function leerSnapshot(): Snapshot | null {
 }
 
 export function borrarSnapshot(): void {
+  ultimaRespuesta = null;
   try {
     localStorage.removeItem(STORAGE_KEY_SNAPSHOT);
   } catch {

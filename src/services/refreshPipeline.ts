@@ -20,6 +20,7 @@ import {
   ApiError,
   consultarApi,
   filasDesdeRespuesta,
+  getUltimaRespuesta,
   guardarSnapshot,
   leerSnapshot,
   loadApiConfig,
@@ -160,12 +161,13 @@ export async function actualizarDatos(
   let origen: OrigenDatos = 'api';
   let latenciaMs: number | null = null;
   let errorApi: ApiError | null = null;
+  let cupoLaCopia = true;
 
   try {
     const respuesta = await consultarApi(config);
     crudo = respuesta.crudo;
     latenciaMs = respuesta.ms;
-    guardarSnapshot(crudo);
+    cupoLaCopia = guardarSnapshot(crudo);
   } catch (e) {
     errorApi = e instanceof ApiError ? e : new ApiError(String((e as Error)?.message ?? e));
     const copia = leerSnapshot();
@@ -179,6 +181,13 @@ export async function actualizarDatos(
   const diff = diffData(previousData, newData);
 
   saveMapeo(procesado.mapeo);
+
+  if (!cupoLaCopia) {
+    procesado.avisos.push(
+      'La respuesta es demasiado grande para guardarla en el navegador. Se trabaja con ella en ' +
+        'memoria: al recargar la página habrá que volver a leer la API.',
+    );
+  }
 
   return {
     origen,
@@ -200,12 +209,12 @@ export async function actualizarDatos(
  * consultar la API: se reutiliza la copia local de la última respuesta.
  */
 export function reprocesarConMapeo(mapeo: MapeoCampos): RefreshOutcome | null {
-  const copia = leerSnapshot();
-  if (!copia) return null;
+  const crudo = getUltimaRespuesta();
+  if (crudo == null) return null;
 
   saveMapeo(mapeo);
   const previousData = engineInstance.getServices().map((s) => ({ ...s }));
-  const procesado = procesarRespuesta(copia.d);
+  const procesado = procesarRespuesta(crudo);
   const diff = diffData(previousData, engineInstance.getServices());
 
   return {

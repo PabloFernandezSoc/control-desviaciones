@@ -53,6 +53,12 @@ export const CAMPOS: Record<string, CampoDef> = {
     alias: ['idservicio', 'servicioid', 'idserv', 'nroservicio', 'numeroservicio', 'numservicio', 'nservicio', 'folio', 'correlativo', 'idos', 'nroos', 'id'],
     usadoPor: 'Llave de todo el modelo y del cruce de extracostos.',
   },
+  extracostoId: {
+    label: 'Id de extracosto',
+    grupo: 'Identificación',
+    alias: ['idextracosto', 'extracostoid', 'idextra', 'extraid', 'idgasto', 'gastoid', 'idadicional', 'idlinea', 'lineaid', 'iddetalle', 'detalleid'],
+    usadoPor: 'Distingue la fila del flete de las de extracosto. Es el discriminador principal.',
+  },
   tipoFila: {
     label: 'Tipo de fila',
     grupo: 'Identificación',
