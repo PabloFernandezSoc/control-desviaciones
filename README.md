@@ -18,9 +18,8 @@ un `.js`. Se suben al mismo servidor que la landing y funcionan; no hace falta
 Node, ni PM2, ni un proceso corriendo.
 
 ```bash
-cd app
 npm install
-npm run build          # -> app/dist/
+npm run build          # -> dist/
 ```
 
 Se copia el contenido de `dist/` a la carpeta que sirva el sitio. Las rutas del
@@ -30,7 +29,7 @@ subdirectorio como `/control-desviaciones/`.
 ### Versión de un solo archivo
 
 ```bash
-npm run build:standalone   # -> app/dist-standalone/control-desviaciones.html
+npm run build:standalone   # -> dist-standalone/control-desviaciones.html
 ```
 
 Un único HTML de ~830 kB con el CSS y el JavaScript embebidos. Se sube tal cual,
@@ -62,6 +61,7 @@ npm run dev            # http://localhost:3000
 
 ```
 index.html                   Documento raíz
+deploy/nginx.conf            Configuración de ejemplo para publicarlo
 src/App.tsx                  Estado global y orquestación de vistas
 src/types.ts                 Modelo de dominio (Service, Deviation, Agreement…)
 src/data/seed.ts             Umbrales por defecto y matriz inicial (vacía)

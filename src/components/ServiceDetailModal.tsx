@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Service, 
   Agreement, 
@@ -55,8 +55,6 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
   onNavigateNext,
   onNavigatePrev
 }) => {
-  if (!service) return null;
-
   // Action Dialog state
   const [actionModal, setActionModal] = useState<{
     type: 'corregir' | 'excepcion' | 'reasignar' | 'comentar' | null;
@@ -66,6 +64,25 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
 
   const [commentText, setCommentText] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+
+  // Escape cierra primero el diálogo de acción y después el panel.
+  useEffect(() => {
+    const alPulsar = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (actionModal.type) {
+        setActionModal({ type: null });
+        setErrorMessage('');
+      } else {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', alPulsar);
+    return () => window.removeEventListener('keydown', alPulsar);
+  }, [actionModal.type, onClose]);
+
+  // El return temprano va después de los hooks: adelantarlo los saltaría en
+  // unos renders y no en otros.
+  if (!service) return null;
 
   const formatClp = (val: number) => {
     return new Intl.NumberFormat('es-CL', {
@@ -117,7 +134,12 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
   const tipoOp = service.tipoOperacion || (service.proyeccion?.tipoServ === 'EXPOD' ? 'exportacion' : 'importacion');
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex justify-end">
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex justify-end"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Ficha del servicio ${service.id}`}
+    >
       
       {/* Slide-over Drawer Panel */}
       <div className="w-full max-w-4xl bg-white h-full shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-right duration-200">
@@ -169,6 +191,8 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
             )}
             <button
               onClick={onClose}
+              aria-label="Cerrar la ficha del servicio"
+              title="Cerrar (Esc)"
               className="p-1.5 bg-slate-800 hover:bg-rose-700 text-slate-300 hover:text-white rounded-lg transition-colors cursor-pointer ml-2"
             >
               <X className="w-5 h-5" />
@@ -529,7 +553,7 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
 
       {/* Action Dialog Modal */}
       {actionModal.type && (
-        <div className="fixed inset-0 z-60 bg-slate-900/70 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-60 bg-slate-900/70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 animate-in zoom-in-95 duration-150">
             
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
@@ -540,6 +564,8 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
               </h3>
               <button
                 onClick={() => { setActionModal({ type: null }); setErrorMessage(''); }}
+                aria-label="Cerrar el diálogo"
+                title="Cerrar (Esc)"
                 className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="w-5 h-5" />

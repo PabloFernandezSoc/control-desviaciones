@@ -132,6 +132,29 @@ export const MatrizComercialView: React.FC<MatrizComercialViewProps> = ({
           </div>
 
           <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+            {agreements.length === 0 && (
+              /* La matriz siempre arranca vacía: los clientes los trae la API y
+                 los acuerdos se cargan aquí. Sin esto la pantalla queda muda. */
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center space-y-2">
+                <FileText className="w-6 h-6 text-slate-300 mx-auto" />
+                <p className="text-sm font-semibold text-slate-700">Todavía no hay acuerdos cargados</p>
+                <p className="text-xs leading-relaxed text-slate-500">
+                  Los clientes vienen del reporte de BIT. Mientras un cliente no tenga acuerdo, sus
+                  servicios aparecen en <strong>Sin Matriz</strong> y se evalúan sólo con las reglas
+                  generales: peso, fechas, extracostos y margen.
+                </p>
+                <p className="text-xs leading-relaxed text-slate-500">
+                  Al crear su matriz se activan además las reglas de tarifa: concepto faltante,
+                  valor fuera de tarifa y desviación respecto del acuerdo.
+                </p>
+                <button
+                  onClick={handleStartNew}
+                  className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Cargar el primer acuerdo
+                </button>
+              </div>
+            )}
             {agreements.map((ag) => {
               const isSelected = selectedAgreement?.id === ag.id;
               return (

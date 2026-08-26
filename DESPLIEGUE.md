@@ -16,10 +16,9 @@ La aplicación **no escribe en el ERP**: sólo lee y organiza.
 ## 1. Generar el build
 
 ```bash
-cd app
 npm install
 npm run check     # chequeo de tipos + verificación de la lógica de integración
-npm run build     # -> app/dist/
+npm run build     # -> dist/
 ```
 
 `dist/` queda así:
@@ -42,12 +41,11 @@ La opción más simple: publicarlo como un subdirectorio del sitio que ya está 
 producción, por ejemplo `https://logity.com/control-desviaciones/`.
 
 ```bash
-rsync -avz --delete app/dist/ usuario@servidor:/var/www/logity/control-desviaciones/
+rsync -avz --delete dist/ usuario@servidor:/var/www/logity/control-desviaciones/
 ```
 
-Con el `deploy/nginx.conf` de este repositorio no hace falta tocar nada: el
-bloque `location /assets/` ya cachea los assets y el resto se sirve como archivo
-estático. Si se quiere que la aplicación no aparezca en buscadores, además del
+En `deploy/nginx.conf` hay una configuración lista: sirve la carpeta como
+subdirectorio y deja preparado el proxy hacia la API. Si se quiere que la aplicación no aparezca en buscadores, además del
 `<meta name="robots" content="noindex, nofollow">` que ya trae el `index.html`,
 conviene agregar la carpeta a `robots.txt`:
 
@@ -84,7 +82,7 @@ En Apache, el equivalente es un `.htaccess` dentro de la carpeta con
 ## 3. La versión de un solo archivo
 
 ```bash
-npm run build:standalone   # -> app/dist-standalone/control-desviaciones.html
+npm run build:standalone   # -> dist-standalone/control-desviaciones.html
 ```
 
 Un único HTML de ~830 kB, sin dependencias externas. Sirve para:
@@ -158,12 +156,12 @@ agotado o un problema de red/CORS.
 ## 5. Actualizar una versión publicada
 
 ```bash
-cd app && npm run build
-rsync -avz --delete app/dist/ usuario@servidor:/var/www/logity/control-desviaciones/
+npm run build
+rsync -avz --delete dist/ usuario@servidor:/var/www/logity/control-desviaciones/
 ```
 
 Los nombres de los archivos son estables (`app.js`, `app.css`), así que el
-`Cache-Control: no-cache` del `deploy/nginx.conf` es lo que hace que el cambio se
+`Cache-Control: no-cache` de `deploy/nginx.conf` es lo que hace que el cambio se
 vea de inmediato.
 
 Lo que cada usuario tenga guardado en su navegador sobrevive a la actualización:
