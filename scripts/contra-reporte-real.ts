@@ -57,9 +57,9 @@ for (const s of r.servicios) {
 );
 
 t('COBERTURA DE DATOS');
-const activos = r.servicios.filter((s) => s.estado !== 'anulado');
+const activos = r.servicios.filter((s) => s.estado !== 'anulado' && s.estado !== 'validado');
 const con = (f: (s: (typeof activos)[number]) => boolean) => activos.filter(f).length;
-console.log(`  servicios activos (sin anulados): ${activos.length} de ${r.servicios.length}`);
+console.log(`  bajo análisis (sin anulados ni validados): ${activos.length} de ${r.servicios.length}`);
 console.log(`  con peso > 0            ${con((s) => (s.pesoKg ?? 0) > 0)}`);
 console.log(`  con estadía medible     ${con((s) => s.horasEstadia !== undefined)}`);
 console.log(`  con días de almacenaje  ${con((s) => s.diasAlmacenaje !== undefined)}`);

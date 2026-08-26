@@ -58,7 +58,7 @@ const EQUIVALENCIAS_ESTADO: [RegExp, ServiceState][] = [
   [/confirmad|coordinad|aprobad/i, 'confirmado'],
   [/transito|tránsito|en\s*curso|en\s*ruta|despachad/i, 'en_transito'],
   [/factur|liquidad/i, 'facturado'],
-  [/validad/i, 'cerrado'],
+  [/validad/i, 'validado'],
   [/programad/i, 'confirmado'],
   [/cerrad|finalizad|complet|terminad|entregad/i, 'cerrado'],
 ];

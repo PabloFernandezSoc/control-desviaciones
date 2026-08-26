@@ -114,6 +114,8 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
             className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg font-medium text-slate-700 cursor-pointer"
           >
             <option value="all">Todos los Estados Operativos</option>
+            <option value="proyeccion">Proyección de Carga</option>
+            <option value="borrador">En Coordinación</option>
             <option value="confirmado">Confirmado</option>
             <option value="en_transito">En Tránsito</option>
             <option value="cerrado">Cerrado</option>

@@ -205,9 +205,18 @@ export class EngineService {
       service.estado === 'facturado';
 
     for (const service of this.services) {
-      // Un servicio anulado no se factura: cualquier hallazgo sobre él sería
-      // trabajo para nadie. Se deja fuera del análisis y de los totales.
-      if (service.estado === 'anulado') continue;
+      /**
+       * Dos estados quedan fuera del análisis y de los totales:
+       *
+       * - `anulado`: no se factura, así que un hallazgo sería trabajo para nadie.
+       * - `validado`: en BIT significa que el servicio ya se revisó y cumplió
+       *   con el detalle de extracostos. Volver a marcarlo contradiría el
+       *   veredicto del propio ERP, y es justamente donde se acumulaban los
+       *   campos vacíos que llenaban la bandeja de ruido.
+       *
+       * La detección apunta a lo que todavía no pasó por esa revisión.
+       */
+      if (service.estado === 'anulado' || service.estado === 'validado') continue;
 
       const rutaStr = `${service.ruta.origen} → ${service.ruta.destino}`;
       const client = this.clients.find(c => c.id === service.clienteId);

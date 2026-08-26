@@ -1,6 +1,15 @@
 export type Role = 'comercial' | 'costos' | 'admin';
 
-export type ServiceState = 'proyeccion' | 'borrador' | 'confirmado' | 'en_transito' | 'cerrado' | 'facturado' | 'anulado';
+export type ServiceState =
+  | 'proyeccion'
+  | 'borrador'
+  | 'confirmado'
+  | 'en_transito'
+  | 'cerrado'
+  | 'facturado'
+  /** Revisado en BIT: sus extracostos ya se verificaron y están conformes. */
+  | 'validado'
+  | 'anulado';
 
 export type OperationType = 'importacion' | 'exportacion' | 'nacional';
 export type ServiceModality = 'directo' | 'diferido' | 'sin_definir';
