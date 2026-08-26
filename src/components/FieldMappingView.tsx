@@ -20,6 +20,8 @@ import {
   Info,
   Plug,
   ShieldOff,
+  Download,
+  ClipboardPaste,
 } from 'lucide-react';
 import {
   CAMPOS,
@@ -33,7 +35,7 @@ interface FieldMappingViewProps {
   columnas: Record<string, InfoColumna>;
   mapeo: MapeoCampos;
   onChangeMapeo: (mapeo: MapeoCampos) => void;
-  reglasDesactivadas: { campo: string; label: string; nota: string }[];
+  reglasDesactivadas: { regla: string; titulo: string; motivo: string }[];
   config: ApiConfig;
   onChangeConfig: (config: ApiConfig) => void;
   onProbarConexion: () => void;
@@ -41,6 +43,9 @@ interface FieldMappingViewProps {
   filas: number;
   servicios: number;
   latenciaMs: number | null;
+  /** Respuesta cruda de la última lectura, para inspeccionarla y exportarla. */
+  respuestaCruda: unknown;
+  onPegarJson: (texto: string) => void;
 }
 
 export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
@@ -55,7 +60,11 @@ export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
   filas,
   servicios,
   latenciaMs,
+  respuestaCruda,
+  onPegarJson,
 }) => {
+  const [jsonPegado, setJsonPegado] = useState('');
+  const [mostrarPegar, setMostrarPegar] = useState(false);
   const [borrador, setBorrador] = useState<ApiConfig>(config);
   const [guardada, setGuardada] = useState(false);
 
@@ -82,6 +91,21 @@ export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
     onChangeConfig(borrador);
     setGuardada(true);
     setTimeout(() => setGuardada(false), 2500);
+  };
+
+  /** Descarga la respuesta cruda: sirve para revisarla fuera de la app. */
+  const descargarJson = () => {
+    try {
+      const blob = new Blob([JSON.stringify(respuestaCruda, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reporte-bit-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('No se pudo preparar la descarga:', e);
+    }
   };
 
   const set = (parcial: Partial<ApiConfig>) => {
@@ -209,20 +233,116 @@ export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
             Reglas que no se están evaluando ({reglasDesactivadas.length})
           </h3>
           <p className="mt-1 max-w-3xl text-xs text-amber-800">
-            El reporte no trae la columna que estas reglas necesitan, así que quedan apagadas. Se
-            prefiere no evaluarlas antes que marcar todos los servicios como incompletos. Si la
-            columna existe con otro nombre, asígnala abajo y las reglas vuelven solas.
+            Falta la columna que necesitan, o la columna llegó con datos que no las sostienen. Se
+            prefiere no evaluarlas antes que marcar todos los servicios como desviados: eso no son
+            hallazgos, es ruido.
           </p>
-          <ul className="mt-3 space-y-1.5">
-            {reglasDesactivadas.map((r) => (
-              <li key={r.campo} className="flex items-start gap-2 text-xs text-amber-900">
+          <ul className="mt-3 space-y-2">
+            {reglasDesactivadas.map((r, i) => (
+              <li key={`${r.regla}-${i}`} className="flex items-start gap-2 text-xs text-amber-900">
                 <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
                 <span>
-                  Falta <strong>{r.label}</strong> — no se evalúa {r.nota}.
+                  <strong>{r.titulo}</strong> — {r.motivo}
                 </span>
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Esquema recibido */}
+      {hayRespuesta && (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5">
+            <div>
+              <h3 className="text-lg font-bold tracking-tight text-slate-900">Datos recibidos</h3>
+              <p className="mt-1 max-w-2xl text-sm text-slate-600">
+                Las {nombresColumna.length} columnas que trae el reporte, tal como llegan. Sirve para
+                verificar el mapeo y para saber qué información existe y cuál habría que complementar.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={descargarJson} className={botonSecundario}>
+                <Download className="h-3.5 w-3.5" />
+                Descargar respuesta
+              </button>
+              <button onClick={() => setMostrarPegar((v) => !v)} className={botonSecundario}>
+                <ClipboardPaste className="h-3.5 w-3.5" />
+                Pegar JSON
+              </button>
+            </div>
+          </div>
+
+          {mostrarPegar && (
+            <div className="border-b border-slate-200 bg-slate-50 p-5">
+              <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                Pega aquí la respuesta del endpoint para trabajar sin conexión
+              </label>
+              <textarea
+                rows={5}
+                value={jsonPegado}
+                onChange={(e) => setJsonPegado(e.target.value)}
+                placeholder='{"data":[ ... ]}'
+                className="w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none"
+              />
+              <button
+                onClick={() => { onPegarJson(jsonPegado); setJsonPegado(''); }}
+                disabled={!jsonPegado.trim()}
+                className="mt-2 flex cursor-pointer items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
+              >
+                Procesar JSON
+              </button>
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Columna</th>
+                  <th className="px-4 py-3 font-semibold">Tipo</th>
+                  <th className="px-4 py-3 font-semibold">Llenado</th>
+                  <th className="px-4 py-3 font-semibold">Valores de ejemplo</th>
+                  <th className="px-4 py-3 font-semibold">Usada por</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {nombresColumna.map((nombre) => {
+                  const info = columnas[nombre];
+                  const llenado = ((info.total - info.nulos) / (info.total || 1)) * 100;
+                  const campo = Object.keys(CAMPOS).find((k) => mapeo[k] === nombre);
+                  return (
+                    <tr key={nombre} className="align-top hover:bg-slate-50/70">
+                      <td className="px-4 py-2.5">
+                        <code className="text-xs font-semibold text-slate-800">{nombre}</code>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500">
+                        {info.esNumero ? 'numérica' : info.esFecha ? (info.conHora ? 'fecha con hora' : 'fecha sin hora') : 'texto'}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500">{Math.round(llenado)}%</td>
+                      <td className="max-w-sm px-4 py-2.5">
+                        <div className="space-y-0.5">
+                          {info.valores.slice(0, 3).map((v, i) => (
+                            <div key={i} className="truncate font-mono text-xs text-slate-500">{v}</div>
+                          ))}
+                          {info.valores.length === 0 && <span className="text-xs text-slate-300">sin valores</span>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs">
+                        {campo ? (
+                          <span className="rounded bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700">
+                            {CAMPOS[campo].label}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -399,6 +519,9 @@ export const FieldMappingView: React.FC<FieldMappingViewProps> = ({
     </div>
   );
 };
+
+const botonSecundario =
+  'flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50';
 
 const inputCls =
   'w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 focus:outline-none';

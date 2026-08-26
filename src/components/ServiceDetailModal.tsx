@@ -27,6 +27,8 @@ import {
   Users,
   Weight
 } from 'lucide-react';
+import { ComplementarDatos } from './ComplementarDatos';
+import { Complementos } from '../services/complementos';
 
 interface ServiceDetailModalProps {
   service: Service | null;
@@ -43,6 +45,8 @@ interface ServiceDetailModalProps {
   ) => void;
   onNavigateNext?: () => void;
   onNavigatePrev?: () => void;
+  complementos: Complementos;
+  onChangeComplementos: (siguiente: Complementos) => void;
 }
 
 export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
@@ -53,7 +57,9 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
   onClose,
   onUpdateStatus,
   onNavigateNext,
-  onNavigatePrev
+  onNavigatePrev,
+  complementos,
+  onChangeComplementos
 }) => {
   // Action Dialog state
   const [actionModal, setActionModal] = useState<{
@@ -519,6 +525,13 @@ export const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({
             </div>
 
           </div>
+
+          {/* Datos que el reporte no trajo y se pueden cargar a mano */}
+          <ComplementarDatos
+            service={service}
+            complementos={complementos}
+            onChange={onChangeComplementos}
+          />
 
           {/* Audit Log / Bitácora Section */}
           {deviation && deviation.bitacora && (

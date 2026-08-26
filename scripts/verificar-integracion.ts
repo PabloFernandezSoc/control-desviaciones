@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { extraerArreglo, aplanar, filasDesdeRespuesta, TIPO_FILA } from '../src/services/apiClient';
 import {
+  tieneHora,
   autoMapear,
   combinarMapeo,
   camposRequeridosFaltantes,
@@ -285,6 +286,59 @@ prueba('los extracostos huérfanos se cuentan y se avisan', () => {
   assert.equal(r.servicios.length, 0);
   assert.equal(r.huerfanos, 1);
   assert.ok(r.avisos.some((a) => a.includes('extracosto')));
+});
+
+// ---------------------------------------------------------------------------
+console.log('\nEstadía: fecha sin hora no es estadía');
+// ---------------------------------------------------------------------------
+
+prueba('tieneHora distingue una fecha de una marca de tiempo', () => {
+  assert.equal(tieneHora('2026-08-04'), false);
+  assert.equal(tieneHora('2026-08-04 14:30'), true);
+  assert.equal(tieneHora('2026-08-04T00:00:00'), false, 'medianoche exacta no es hora útil');
+  assert.equal(tieneHora('04/08/2026 08:15:00'), true);
+  assert.equal(tieneHora(''), false);
+  assert.equal(tieneHora(null), false);
+});
+
+prueba('con in/out planta sin hora NO se calcula estadía y se apaga R-GEN-05', () => {
+  const filasSinHora = filasDesdeRespuesta({
+    data: [{
+      idServicio: 'S-1', nombreCliente: 'X', totalVenta: 100, fechaServicio: '2026-08-01',
+      inPlanta: '2026-08-01', outPlanta: '2026-08-16',   // 15 días, sin hora
+    }],
+  });
+  const m = autoMapear(filasSinHora).mapeo;
+  const r = construirServicios(filasSinHora, m);
+  assert.equal(r.servicios[0].horasEstadia, undefined, 'no se inventa una estadía de 360 hrs');
+  assert.ok(
+    r.reglasSinSustento.some((x) => x.regla === 'R_GEN_05'),
+    'R-GEN-05 debe quedar sin sustento',
+  );
+});
+
+prueba('con hora real sí se calcula la estadía', () => {
+  const filasConHora = filasDesdeRespuesta({
+    data: [{
+      idServicio: 'S-1', nombreCliente: 'X', totalVenta: 100, fechaServicio: '2026-08-01',
+      inPlanta: '2026-08-01 08:00', outPlanta: '2026-08-01 14:30',
+    }],
+  });
+  const m = autoMapear(filasConHora).mapeo;
+  const r = construirServicios(filasConHora, m);
+  assert.equal(r.servicios[0].horasEstadia, 6.5);
+  assert.equal(r.reglasSinSustento.length, 0);
+});
+
+prueba('un servicio sin fecha utilizable se cuenta y se avisa', () => {
+  const sinFecha = filasDesdeRespuesta({
+    data: [{ idServicio: 'S-1', nombreCliente: 'X', totalVenta: 100, fechaServicio: 'no es fecha' }],
+  });
+  const m = autoMapear(sinFecha).mapeo;
+  const r = construirServicios(sinFecha, m);
+  assert.equal(r.sinFecha, 1);
+  assert.equal(r.servicios[0].fechaCreacion, '', 'no se inventa una fecha');
+  assert.ok(r.avisos.some((a) => a.includes('sin fecha utilizable')));
 });
 
 // ---------------------------------------------------------------------------

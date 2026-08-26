@@ -261,6 +261,8 @@ export interface InfoColumna {
   total: number;
   esNumero: boolean;
   esFecha: boolean;
+  /** La columna es de fecha y además trae hora en al menos parte de las filas. */
+  conHora: boolean;
   distintos: number;
 }
 
@@ -291,13 +293,18 @@ export function aNumero(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Interpreta las formas de fecha que aparecen en el reporte, incluida la de .NET. */
+/**
+ * Interpreta las formas de fecha del reporte, incluida la de .NET.
+ *
+ * Conserva la hora cuando viene: las reglas que miden tiempo (estadía en
+ * planta) la necesitan. Descartarla hacía que la diferencia diera siempre cero.
+ */
 export function aFecha(v: unknown): Date | null {
   if (v == null || v === '') return null;
   if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
 
-  const mk = (y: number, mo: number, da: number): Date | null => {
-    const d = new Date(y, mo - 1, da);
+  const mk = (y: number, mo: number, da: number, h = 0, mi = 0, se = 0): Date | null => {
+    const d = new Date(y, mo - 1, da, h, mi, se);
     return isNaN(d.getTime()) ? null : d;
   };
 
@@ -313,13 +320,40 @@ export function aFecha(v: unknown): Date | null {
 
   const s = String(v).trim();
   let m: RegExpMatchArray | null;
+
   if ((m = s.match(/\/Date\((\d+)/))) return new Date(+m[1]);
-  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return mk(+m[1], +m[2], +m[3]);
-  if ((m = s.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})/))) return mk(+m[3], +m[2], +m[1]);
+
+  // La hora, si viene, va aparte: aparece igual tras una fecha ISO o dd/mm/yyyy.
+  const th = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  const [h, mi, se] = th ? [+th[1], +th[2], +(th[3] ?? 0)] : [0, 0, 0];
+
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return mk(+m[1], +m[2], +m[3], h, mi, se);
+  if ((m = s.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})/))) return mk(+m[3], +m[2], +m[1], h, mi, se);
   if ((m = s.match(/^(\d{4})[-/](\d{1,2})$/))) return mk(+m[1], +m[2], 1);
   if ((m = s.match(/^(\d{4})(\d{2})(\d{2})$/))) return mk(+m[1], +m[2], +m[3]);
+
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * ¿El valor trae hora, o es sólo una fecha?
+ *
+ * Importa para las reglas que miden tiempo: si in/out planta llegan como fechas
+ * sin hora, la diferencia son días completos y una regla con umbral en horas se
+ * dispara en todos los servicios. Eso no es un hallazgo, es un artefacto.
+ */
+export function tieneHora(v: unknown): boolean {
+  if (v == null || v === '') return false;
+  if (v instanceof Date) return v.getHours() !== 0 || v.getMinutes() !== 0 || v.getSeconds() !== 0;
+  // Un epoch o un /Date(...)/ traen hora salvo que caigan justo en medianoche.
+  if (typeof v === 'number') return v > 1e9;
+  const s = String(v);
+  if (/\/Date\(/.test(s)) return true;
+  // hh:mm en cualquier parte, o un ISO con T y hora distinta de cero.
+  const m = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return false;
+  return !(m[1] === '00' && m[2] === '00' && (m[3] ?? '00') === '00');
 }
 
 export function inventariarColumnas(filas: FilaCruda[]): Record<string, InfoColumna> {
@@ -337,6 +371,7 @@ export function inventariarColumnas(filas: FilaCruda[]): Record<string, InfoColu
           total: 0,
           esNumero: false,
           esFecha: false,
+          conHora: false,
           distintos: 0,
         };
       }
@@ -347,6 +382,7 @@ export function inventariarColumnas(filas: FilaCruda[]): Record<string, InfoColu
     const c = columnas[clave];
     let numericos = 0;
     let fechas = 0;
+    let conHora = 0;
 
     for (const fila of muestra) {
       const v = fila ? fila[clave] : null;
@@ -357,12 +393,16 @@ export function inventariarColumnas(filas: FilaCruda[]): Record<string, InfoColu
       }
       if (c.valores.length < 8 && !c.valores.includes(String(v))) c.valores.push(String(v));
       if (typeof v === 'number' || (/^[\s$]*-?[\d.,]+\s*$/.test(String(v)) && /\d/.test(String(v)))) numericos++;
-      if (aFecha(v)) fechas++;
+      if (aFecha(v)) {
+        fechas++;
+        if (tieneHora(v)) conHora++;
+      }
     }
 
     const llenos = c.total - c.nulos;
     c.esNumero = llenos > 0 && numericos > llenos * 0.8;
     c.esFecha = llenos > 0 && fechas > llenos * 0.8 && !c.esNumero;
+    c.conHora = c.esFecha && conHora > 0;
     c.distintos = new Set(muestra.map((f) => f && f[clave]).filter((v) => v != null && v !== '')).size;
   }
 

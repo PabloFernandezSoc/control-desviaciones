@@ -35,6 +35,7 @@ import {
   CAMPOS,
 } from './fieldMapping';
 import { construirServicios, reglasDesactivadasPorMapeo } from './adapter';
+import { aplicarComplementos, loadComplementos, reglasRehabilitadas } from './complementos';
 import { DiffResult, ToastInput, construirNotificacionesDeDiff, diffData } from './dataDiff';
 
 export type OrigenDatos = 'api' | 'copia-local';
@@ -45,8 +46,8 @@ export interface RefreshOutcome {
   /** Columnas encontradas en la respuesta, para la vista de mapeo. */
   columnas: Record<string, InfoColumna>;
   mapeo: MapeoCampos;
-  /** Reglas que no se evalúan porque su columna no vino en el reporte. */
-  reglasDesactivadas: { campo: string; label: string; nota: string }[];
+  /** Reglas que no se evalúan, con el motivo: falta la columna o los datos no la soportan. */
+  reglasDesactivadas: { regla: string; titulo: string; motivo: string }[];
   avisos: string[];
   filas: number;
   servicios: number;
@@ -66,7 +67,7 @@ function procesarRespuesta(crudo: unknown): {
   servicios: Service[];
   avisos: string[];
   filas: number;
-  reglasDesactivadas: { campo: string; label: string; nota: string }[];
+  reglasDesactivadas: { regla: string; titulo: string; motivo: string }[];
 } {
   const filas = filasDesdeRespuesta(crudo);
 
@@ -97,18 +98,49 @@ function procesarRespuesta(crudo: unknown): {
   const construccion = construirServicios(filas, mapeo);
   avisos.push(...construccion.avisos);
 
-  // Las reglas cuyo campo no vino se apagan, para no marcar todo como incompleto.
-  const desactivadas = reglasDesactivadasPorMapeo(mapeo);
-  engineInstance.setReglasSuprimidas(desactivadas.reglas);
-  engineInstance.setDatosApi(construccion.servicios, construccion.clientes);
+  // Lo cargado a mano rellena lo que la API dejó vacío, antes de evaluar reglas.
+  const complementos = loadComplementos();
+  const conComplementos = aplicarComplementos(construccion.servicios, complementos);
+
+  // Se apagan dos clases de reglas: las que no tienen columna y las que la
+  // tienen pero con datos que no las sostienen (ver `reglasSinSustento`).
+  const porMapeo = reglasDesactivadasPorMapeo(mapeo);
+  const suprimidas = new Set<string>(porMapeo.reglas);
+  for (const r of construccion.reglasSinSustento) suprimidas.add(r.regla);
+
+  // Una regla vuelve si el complemento aportó su dato en algún servicio.
+  for (const regla of reglasRehabilitadas(complementos)) suprimidas.delete(regla);
+
+  engineInstance.setReglasSuprimidas(suprimidas);
+  engineInstance.setDatosApi(conComplementos.servicios, construccion.clientes);
+
+  if (conComplementos.aplicados > 0) {
+    avisos.push(
+      `Se aplicaron ${conComplementos.aplicados} datos complementarios sobre ` +
+        `${conComplementos.serviciosTocados} servicios.`,
+    );
+  }
+
+  const reglasDesactivadas = [
+    ...porMapeo.motivos.map((m) => ({
+      regla: m.campo,
+      titulo: `Falta la columna «${m.label}»`,
+      motivo: `No se evalúa ${m.nota}. Se puede cargar a mano en la ficha de cada servicio.`,
+    })),
+    ...construccion.reglasSinSustento.map((r) => ({
+      regla: r.regla,
+      titulo: `${r.regla.replace(/_/g, '-')}: los datos no la sostienen`,
+      motivo: r.motivo,
+    })),
+  ];
 
   return {
     columnas: deteccion.columnas,
     mapeo,
-    servicios: construccion.servicios,
+    servicios: conComplementos.servicios,
     avisos,
     filas: filas.length,
-    reglasDesactivadas: desactivadas.motivos,
+    reglasDesactivadas,
   };
 }
 
@@ -179,6 +211,40 @@ export function reprocesarConMapeo(mapeo: MapeoCampos): RefreshOutcome | null {
   return {
     origen: 'copia-local',
     diff,
+    columnas: procesado.columnas,
+    mapeo: procesado.mapeo,
+    reglasDesactivadas: procesado.reglasDesactivadas,
+    avisos: procesado.avisos,
+    filas: procesado.filas,
+    servicios: procesado.servicios.length,
+    latenciaMs: null,
+    timestamp: engineInstance.getLastSyncTime(),
+    errorApi: null,
+  };
+}
+
+/**
+ * Procesa un JSON pegado a mano, sin pasar por la red.
+ *
+ * Sirve para trabajar cuando la API no es alcanzable desde el navegador —por
+ * CORS, por VPN o por el puerto— y para revisar una respuesta guardada.
+ */
+export function procesarJsonPegado(texto: string): RefreshOutcome {
+  let crudo: unknown;
+  try {
+    crudo = JSON.parse(texto);
+  } catch (e) {
+    throw new ApiError(`El texto pegado no es JSON válido: ${(e as Error).message}`);
+  }
+
+  const previousData = engineInstance.getServices().map((s) => ({ ...s }));
+  guardarSnapshot(crudo);
+  const procesado = procesarRespuesta(crudo);
+  saveMapeo(procesado.mapeo);
+
+  return {
+    origen: 'copia-local',
+    diff: diffData(previousData, engineInstance.getServices()),
     columnas: procesado.columnas,
     mapeo: procesado.mapeo,
     reglasDesactivadas: procesado.reglasDesactivadas,

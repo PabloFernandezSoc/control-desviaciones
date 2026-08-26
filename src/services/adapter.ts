@@ -11,7 +11,7 @@
 
 import { Service, ServiceLine, ServiceState, OperationType, ServiceModality, Client } from '../types';
 import { FilaCruda, TIPO_FILA } from './apiClient';
-import { CAMPOS, MapeoCampos, aFecha, aNumero } from './fieldMapping';
+import { CAMPOS, MapeoCampos, aFecha, aNumero, tieneHora } from './fieldMapping';
 
 export interface ConstruccionResultado {
   servicios: Service[];
@@ -20,6 +20,14 @@ export interface ConstruccionResultado {
   /** Filas de extracosto que no encontraron su servicio. */
   huerfanos: number;
   filasExtra: number;
+  /**
+   * Reglas que no se pueden evaluar por cómo vienen los datos, no por falta de
+   * columna. Se apagan igual: una regla alimentada con un valor que no la
+   * soporta no produce hallazgos, produce ruido.
+   */
+  reglasSinSustento: { regla: string; motivo: string }[];
+  /** Cuántos servicios llegaron sin fecha utilizable. */
+  sinFecha: number;
 }
 
 const iso = (d: Date | null): string | undefined =>
@@ -117,6 +125,8 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       avisos: ['No se pudo identificar la columna del id de servicio. Revisa el mapeo de campos.'],
       huerfanos: 0,
       filasExtra: 0,
+      reglasSinSustento: [],
+      sinFecha: 0,
     };
   }
 
@@ -137,6 +147,8 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
   let huerfanos = 0;
   let filasExtra = 0;
   let sinFecha = 0;
+  let estadiaMedible = false;
+  let estadiaConFechaSuelta = false;
 
   for (const [id, delGrupo] of grupos) {
     const marcas = delGrupo.map((f) => esExtra(f, mapeo));
@@ -271,11 +283,20 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       );
     }
 
-    // Horas de estadía: derivadas de in/out planta.
-    const inP = aFecha(leer(base, 'inPlanta'));
-    const outP = aFecha(leer(base, 'outPlanta'));
+    // Horas de estadía: sólo tienen sentido si las marcas traen hora. Con
+    // fechas a secas la diferencia son días completos y R-GEN-05 se dispararía
+    // en todos los servicios (ver `estadiaMedible`).
+    const crudoIn = leer(base, 'inPlanta');
+    const crudoOut = leer(base, 'outPlanta');
+    const inP = aFecha(crudoIn);
+    const outP = aFecha(crudoOut);
     if (inP && outP) {
-      servicio.horasEstadia = Math.max(0, (outP.getTime() - inP.getTime()) / 3600000);
+      if (tieneHora(crudoIn) || tieneHora(crudoOut)) {
+        servicio.horasEstadia = Math.max(0, (outP.getTime() - inP.getTime()) / 3600000);
+        estadiaMedible = true;
+      } else {
+        estadiaConFechaSuelta = true;
+      }
     }
 
     // El bloque de proyección alimenta la vista de proyección de carga.
@@ -312,7 +333,8 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
 
   if (sinFecha) {
     avisos.push(
-      `${sinFecha} servicios llegaron sin fecha válida. Revisa la columna asignada a "Fecha del servicio".`,
+      `${sinFecha} de ${servicios.length} servicios llegaron sin fecha utilizable. ` +
+        'Revisa la columna asignada a "Fecha del servicio" en Mapeo de Campos.',
     );
   }
   if (huerfanos) {
@@ -321,12 +343,30 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
     );
   }
 
+  const reglasSinSustento: { regla: string; motivo: string }[] = [];
+  if (estadiaConFechaSuelta && !estadiaMedible) {
+    reglasSinSustento.push({
+      regla: 'R_GEN_05',
+      motivo:
+        'Las columnas de in/out planta traen sólo fecha, sin hora: la diferencia son días completos ' +
+        'y el umbral está en horas. Mientras no llegue la hora real, la estadía no se evalúa.',
+    });
+  }
+  if (sinFecha === servicios.length && servicios.length > 0) {
+    reglasSinSustento.push({
+      regla: 'R_GEN_01',
+      motivo: 'Ningún servicio trae una fecha utilizable, así que no se puede controlar la ETA.',
+    });
+  }
+
   return {
     servicios,
     clientes: Array.from(clientesPorId.values()).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')),
     avisos,
     huerfanos,
     filasExtra,
+    reglasSinSustento,
+    sinFecha,
   };
 }
 

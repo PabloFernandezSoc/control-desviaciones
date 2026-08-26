@@ -28,12 +28,14 @@ import { FieldMappingView } from './components/FieldMappingView';
 import { ToastProvider, useToast } from './components/Toast';
 import { InfoColumna, MapeoCampos, loadMapeo, saveMapeo } from './services/fieldMapping';
 import { ApiConfig, loadApiConfig, saveApiConfig, leerSnapshot } from './services/apiClient';
+import { Complementos, loadComplementos, saveComplementos } from './services/complementos';
 import {
   OrigenDatos,
   RefreshOutcome,
   actualizarDatos,
   cargarDesdeCopiaLocal,
   notificacionesDeActualizacion,
+  procesarJsonPegado,
   reprocesarConMapeo,
 } from './services/refreshPipeline';
 
@@ -66,6 +68,7 @@ function AppShell() {
   const [origenDatos, setOrigenDatos] = useState<OrigenDatos | null>(null);
   const [filasRecibidas, setFilasRecibidas] = useState(0);
   const [latenciaMs, setLatenciaMs] = useState<number | null>(null);
+  const [complementos, setComplementos] = useState<Complementos>(() => loadComplementos());
 
   // Trigger state increment for re-evaluations
   const [refreshTick, setRefreshTick] = useState(0);
@@ -137,6 +140,37 @@ function AppShell() {
     // Sólo al montar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * El usuario cargó un dato que la API no trae: se guarda y se reconstruye el
+   * modelo con la copia local, para que las reglas lo tomen de inmediato.
+   */
+  const handleChangeComplementos = (siguiente: Complementos) => {
+    setComplementos(siguiente);
+    saveComplementos(siguiente);
+    const resultado = reprocesarConMapeo(mapeo);
+    if (resultado) aplicarResultado(resultado);
+  };
+
+  /** Procesa una respuesta pegada a mano (sin red). */
+  const handlePegarJson = (texto: string) => {
+    try {
+      const resultado = procesarJsonPegado(texto);
+      aplicarResultado(resultado);
+      toast.mostrar({
+        variante: 'success',
+        titulo: 'JSON procesado',
+        mensaje: `${resultado.filas} filas leídas, ${resultado.servicios} servicios construidos.`,
+      });
+    } catch (e) {
+      toast.mostrar({
+        variante: 'error',
+        titulo: 'No se pudo procesar el JSON',
+        mensaje: (e as Error)?.message ?? 'Error desconocido.',
+        duracionMs: 9000,
+      });
+    }
+  };
 
   const handleChangeApiConfig = (nueva: ApiConfig) => {
     setApiConfig(nueva);
@@ -384,6 +418,8 @@ function AppShell() {
               filas={filasRecibidas}
               servicios={engineInstance.getServices().length}
               latenciaMs={latenciaMs}
+              respuestaCruda={leerSnapshot()?.d ?? null}
+              onPegarJson={handlePegarJson}
             />
           )}
 
@@ -418,6 +454,8 @@ function AppShell() {
           onUpdateStatus={handleUpdateStatus}
           onNavigateNext={() => handleNavigateModal('next')}
           onNavigatePrev={() => handleNavigateModal('prev')}
+          complementos={complementos}
+          onChangeComplementos={handleChangeComplementos}
         />
       )}
 

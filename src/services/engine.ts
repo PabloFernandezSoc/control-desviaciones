@@ -898,11 +898,18 @@ export class EngineService {
     }
   }
 
-  private calculateAgeDays(dateStr: string): number {
+  /**
+   * Antigüedad en días de la desviación.
+   *
+   * Devuelve `null` cuando el servicio llegó sin fecha utilizable: antes esto
+   * producía NaN y la tabla mostraba "NaN días".
+   */
+  private calculateAgeDays(dateStr: string): number | null {
+    if (!dateStr) return null;
     const created = new Date(dateStr).getTime();
-    const now = new Date('2026-08-24').getTime();
-    const diff = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-    return Math.max(1, diff);
+    if (!Number.isFinite(created)) return null;
+    const diff = Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24));
+    return Number.isFinite(diff) ? Math.max(0, diff) : null;
   }
 }
 

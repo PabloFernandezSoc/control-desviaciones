@@ -237,7 +237,7 @@ export interface Deviation {
   responsableRol: 'comercial' | 'costos' | 'admin';
   estado: DeviationStatus;
   fechaDeteccion: string;
-  antiguedadDias: number;
+  antiguedadDias: number | null; // null = el servicio llegó sin fecha utilizable
   reincidente?: boolean;
   bitacora: AuditLog[];
   detallesExplicacion?: string;

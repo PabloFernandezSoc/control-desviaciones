@@ -539,7 +539,9 @@ export const DeviationsTable: React.FC<DeviationsTableProps> = ({
 
                   {/* Antigüedad */}
                   <td className="py-3 px-4 text-center font-mono text-slate-500 text-[11px]">
-                    {dev.antiguedadDias} {dev.antiguedadDias === 1 ? 'día' : 'días'}
+                    {dev.antiguedadDias === null
+                      ? <span title="El servicio llegó sin fecha utilizable">sin fecha</span>
+                      : `${dev.antiguedadDias} ${dev.antiguedadDias === 1 ? 'día' : 'días'}`}
                   </td>
 
                   {/* Action arrow */}
