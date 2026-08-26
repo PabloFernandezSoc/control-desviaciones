@@ -11,7 +11,8 @@
 
 import { Service, ServiceLine, ServiceState, OperationType, ServiceModality, Client } from '../types';
 import { FilaCruda, TIPO_FILA } from './apiClient';
-import { CAMPOS, MapeoCampos, aFecha, aNumero, tieneHora } from './fieldMapping';
+import { CAMPOS, MapeoCampos, aFecha, aNumero, esFechaNula, tieneHora } from './fieldMapping';
+import { Clasificador, TipoExtracosto, crearClasificador } from './extracostos';
 
 export interface ConstruccionResultado {
   servicios: Service[];
@@ -51,12 +52,15 @@ export function clienteIdDesdeNombre(nombre: string): string {
 // ---------------------------------------------------------------------------
 
 const EQUIVALENCIAS_ESTADO: [RegExp, ServiceState][] = [
+  [/anulad|cancelad/i, 'anulado'],
   [/proyec/i, 'proyeccion'],
   [/coordinac|borrador|pendiente|ingresad/i, 'borrador'],
   [/confirmad|coordinad|aprobad/i, 'confirmado'],
   [/transito|tránsito|en\s*curso|en\s*ruta|despachad/i, 'en_transito'],
   [/factur|liquidad/i, 'facturado'],
-  [/cerrad|finalizad|complet|terminad/i, 'cerrado'],
+  [/validad/i, 'cerrado'],
+  [/programad/i, 'confirmado'],
+  [/cerrad|finalizad|complet|terminad|entregad/i, 'cerrado'],
 ];
 
 export function normalizarEstado(v: unknown): ServiceState {
@@ -127,7 +131,11 @@ function esExtra(fila: FilaCruda, mapeo: MapeoCampos): boolean | null {
 // Construcción
 // ---------------------------------------------------------------------------
 
-export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): ConstruccionResultado {
+export function construirServicios(
+  filas: FilaCruda[],
+  mapeo: MapeoCampos,
+  clasificador: Clasificador = crearClasificador(),
+): ConstruccionResultado {
   const avisos: string[] = [];
 
   if (!mapeo.idServicio) {
@@ -191,7 +199,19 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       });
     }
 
-    const fechaServicio = aFecha(leer(base, 'fecha'));
+    /**
+     * Fecha del servicio.
+     *
+     * El reporte no trae una columna "fecha del servicio": trae el periodo
+     * (un YYYYMM) y varias fechas operativas. Se toma la primera utilizable,
+     * de la más específica a la más general.
+     */
+    const fechaServicio =
+      aFecha(leer(base, 'fecha')) ??
+      aFecha(leer(base, 'fechaRetiro')) ??
+      aFecha(leer(base, 'inPlanta')) ??
+      aFecha(leer(base, 'fechaStacking')) ??
+      aFecha(leer(base, 'fechaPresentacion'));
     if (!fechaServicio) sinFecha++;
 
     // Línea base: la venta y el costo del servicio propiamente tal.
@@ -221,7 +241,10 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       });
     }
 
-    // Extracostos: una línea de venta y otra de costo por cada uno.
+    // Extracostos: una línea de venta y otra de costo por cada uno, y se
+    // registra qué tipos quedan cobrados para las reglas de "condición sin cobro".
+    const tiposPresentes = new Set<TipoExtracosto>();
+
     delGrupo.forEach((fila, i) => {
       if (i === idxBase) return;
       filasExtra++;
@@ -230,6 +253,8 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       const codigo = codigoDeConcepto(concepto);
       // Se prefiere el id real del extracosto sobre el índice de la fila.
       const idExtra = texto(leer(fila, 'extracostoId')) || String(i);
+
+      for (const t of clasificador.clasificar(concepto)) tiposPresentes.add(t);
       const venta = aNumero(leer(fila, 'venta'));
       const costo = aNumero(leer(fila, 'costo'));
 
@@ -287,7 +312,23 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
       fechaRetiro: iso(aFecha(leer(base, 'fechaRetiro'))),
       fechaPresentacion: iso(aFecha(leer(base, 'fechaPresentacion'))),
       direccionPlanta: texto(leer(base, 'destino')) || undefined,
+      extracostosPresentes: Array.from(tiposPresentes),
     };
+
+    // Incidencias: el reporte las trae como "último evento".
+    const incTipo = texto(leer(base, 'incidenciaTipo'));
+    const incComentario = texto(leer(base, 'incidenciaComentario'));
+    if (incTipo || incComentario) {
+      const texto_ = `${incTipo} ${incComentario}`.toUpperCase();
+      servicio.incidencias = {
+        falsoFlete: /FALSO/.test(texto_) || undefined,
+        redestino: /REDESTINO|REDIRECC/.test(texto_) || undefined,
+        multas: /MULTA/.test(texto_) || undefined,
+        detalle: [incTipo, texto(leer(base, 'incidenciaGravedad')), incComentario]
+          .filter(Boolean)
+          .join(' · '),
+      };
+    }
 
     // Días de almacenaje: derivados, no vienen en el reporte.
     const retiro = aFecha(leer(base, 'fechaRetiro'));
@@ -307,6 +348,7 @@ export function construirServicios(filas: FilaCruda[], mapeo: MapeoCampos): Cons
     const inP = aFecha(crudoIn);
     const outP = aFecha(crudoOut);
     if (inP && outP) {
+      // Sólo este servicio: en el reporte conviven marcas con hora y sin ella.
       if (tieneHora(crudoIn) || tieneHora(crudoOut)) {
         servicio.horasEstadia = Math.max(0, (outP.getTime() - inP.getTime()) / 3600000);
         estadiaMedible = true;

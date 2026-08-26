@@ -1,6 +1,6 @@
 export type Role = 'comercial' | 'costos' | 'admin';
 
-export type ServiceState = 'proyeccion' | 'borrador' | 'confirmado' | 'en_transito' | 'cerrado' | 'facturado';
+export type ServiceState = 'proyeccion' | 'borrador' | 'confirmado' | 'en_transito' | 'cerrado' | 'facturado' | 'anulado';
 
 export type OperationType = 'importacion' | 'exportacion' | 'nacional';
 export type ServiceModality = 'directo' | 'diferido' | 'sin_definir';
@@ -198,7 +198,14 @@ export interface Service {
   atributosEspeciales?: ServiceAtributosEspeciales;
   incidencias?: ServiceIncidencias;
   aptoFacturacion?: boolean; // RF-06: True iff no open Alta severity alerts
-  notas?: string; // Observaciones libres (columna exclusiva de Google Sheets)
+  notas?: string; // Observaciones libres
+  /**
+   * Tipos de extracosto que el servicio SÍ tiene cobrados (sobreestadía,
+   * sobrepeso, almacenaje…). La mayoría de las reglas compara una condición
+   * detectada contra esta lista: si la condición ocurrió y el tipo no está,
+   * hay un cobro que falta.
+   */
+  extracostosPresentes?: string[];
 }
 
 export interface AuditLog {

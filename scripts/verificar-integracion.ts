@@ -28,6 +28,7 @@ import {
   clienteIdDesdeNombre,
 } from '../src/services/adapter';
 import { diffData, construirNotificacionesDeDiff } from '../src/services/dataDiff';
+import { crearClasificador } from '../src/services/extracostos';
 
 let pruebas = 0;
 let fallidas = 0;
@@ -452,6 +453,75 @@ prueba('con todas las columnas no se apaga ninguna regla', () => {
     completo[c] = `col_${c}`;
   }
   assert.equal(reglasDesactivadasPorMapeo(completo).reglas.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+console.log('\nTaxonomía de extracostos (nombres reales de BIT)');
+// ---------------------------------------------------------------------------
+
+const clas = crearClasificador();
+
+prueba('reconoce las variantes de sobrestadía', () => {
+  for (const p of ['SOBRESTADIA POR HORA', 'SOBRESTADIA', 'SOBRE ESTADIA EN PUERTO', 'SOBRESTADIA CLIENTES BASE']) {
+    assert.ok(clas.clasificar(p).includes('sobreestadia'), `no reconoció ${p}`);
+  }
+});
+
+prueba('reconoce las variantes de sobrepeso y almacenaje', () => {
+  for (const p of ['SOBREPESO', 'SOBREPESO ESPECIAL 26,2 TON + TARA', 'SOBREPESO CLIENTES BASE']) {
+    assert.ok(clas.clasificar(p).includes('sobrepeso'), `no reconoció ${p}`);
+  }
+  for (const p of ['ALMACENAJE M2', 'ALMACENAJE SAI 40 DRY', 'DIA ADICIONAL ALMACENAJE 40 DRY', 'ALMACENAJE IMO VAP DECATHLON']) {
+    assert.ok(clas.clasificar(p).includes('almacenaje'), `no reconoció ${p}`);
+  }
+});
+
+prueba('un flete no se confunde con un extracosto tipificado', () => {
+  for (const p of ['TPS-SITRANS SCL', 'SAI-RENCA-SAI', 'VAP- HOOK- VAP']) {
+    assert.deepEqual(clas.clasificar(p), ['otro'], `${p} no debería tipificarse`);
+  }
+});
+
+prueba('tolera acentos y minúsculas', () => {
+  assert.ok(clas.clasificar('Sobrestadía por hora').includes('sobreestadia'));
+});
+
+prueba('el servicio registra qué tipos de extracosto tiene cobrados', () => {
+  const conCobro = [
+    { servicioID: 'A', extraCostoID: 0, cliente: 'X', venta: 100000, fechaServicio: '2026-08-01', producto: 'SAI-SCL-SAI', contPeso: 30000 },
+    { servicioID: 'A', extraCostoID: 5, cliente: 'X', venta: 20000,  fechaServicio: '2026-08-01', producto: 'SOBREPESO' },
+    { servicioID: 'B', extraCostoID: 0, cliente: 'Y', venta: 100000, fechaServicio: '2026-08-01', producto: 'SAI-SCL-SAI', contPeso: 30000 },
+  ];
+  const m = autoMapear(conCobro).mapeo;
+  const r = construirServicios(conCobro, m, clas);
+
+  const a = r.servicios.find((x) => x.id === 'A')!;
+  const bServ = r.servicios.find((x) => x.id === 'B')!;
+  assert.ok(a.extracostosPresentes?.includes('sobrepeso'), 'A cobra sobrepeso');
+  assert.ok(!bServ.extracostosPresentes?.includes('sobrepeso'), 'B no cobra sobrepeso');
+  // Los dos tienen sobrepeso; sólo B es desviación.
+  assert.equal(a.pesoKg, 30000);
+  assert.equal(bServ.pesoKg, 30000);
+});
+
+// ---------------------------------------------------------------------------
+console.log('\nCentinela de fecha nula del ERP');
+// ---------------------------------------------------------------------------
+
+prueba('1900-01-01 no es una fecha', () => {
+  assert.equal(aFecha('1900-01-01T00:00:00'), null);
+  assert.equal(aFecha('2026-08-25T00:00:00')?.getFullYear(), 2026);
+});
+
+prueba('la fecha del servicio cae a la primera columna utilizable', () => {
+  const sinVentaFecha = [
+    { servicioID: 'A', extraCostoID: 0, cliente: 'X', venta: 100, ventaFecha: '',
+      fechaRetiro: '1900-01-01T00:00:00', inPlanta: '2026-08-20T00:00:00' },
+  ];
+  const m = autoMapear(sinVentaFecha).mapeo;
+  const r = construirServicios(sinVentaFecha, m, clas);
+  assert.equal(r.servicios[0].fechaCreacion, '2026-08-20', 'usa inPlanta cuando lo demás no sirve');
+  assert.equal(r.sinFecha, 0);
 });
 
 // ---------------------------------------------------------------------------

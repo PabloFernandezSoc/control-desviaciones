@@ -37,6 +37,7 @@ import {
 } from './fieldMapping';
 import { construirServicios, reglasDesactivadasPorMapeo } from './adapter';
 import { aplicarComplementos, loadComplementos, reglasRehabilitadas } from './complementos';
+import { crearClasificador, loadPatrones } from './extracostos';
 import { DiffResult, ToastInput, construirNotificacionesDeDiff, diffData } from './dataDiff';
 
 export type OrigenDatos = 'api' | 'copia-local';
@@ -96,7 +97,7 @@ function procesarRespuesta(crudo: unknown): {
     );
   }
 
-  const construccion = construirServicios(filas, mapeo);
+  const construccion = construirServicios(filas, mapeo, crearClasificador(loadPatrones()));
   avisos.push(...construccion.avisos);
 
   // Lo cargado a mano rellena lo que la API dejó vacío, antes de evaluar reglas.

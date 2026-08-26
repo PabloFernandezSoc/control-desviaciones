@@ -50,19 +50,19 @@ export const CAMPOS: Record<string, CampoDef> = {
     label: 'Id de servicio',
     requerido: true,
     grupo: 'Identificación',
-    alias: ['idservicio', 'servicioid', 'idserv', 'nroservicio', 'numeroservicio', 'numservicio', 'nservicio', 'folio', 'correlativo', 'idos', 'nroos', 'id'],
+    alias: ['servicioid', 'idservicio', 'idserv', 'nroservicio', 'numeroservicio', 'numservicio', 'nservicio', 'folio', 'correlativo', 'idos', 'nroos', 'id'],
     usadoPor: 'Llave de todo el modelo y del cruce de extracostos.',
   },
   extracostoId: {
     label: 'Id de extracosto',
     grupo: 'Identificación',
-    alias: ['idextracosto', 'extracostoid', 'idextra', 'extraid', 'idgasto', 'gastoid', 'idadicional', 'idlinea', 'lineaid', 'iddetalle', 'detalleid'],
+    alias: ['extracostoid', 'idextracosto', 'idextra', 'extraid', 'idgasto', 'gastoid', 'idadicional', 'idlinea', 'lineaid', 'iddetalle', 'detalleid'],
     usadoPor: 'Distingue la fila del flete de las de extracosto. Es el discriminador principal.',
   },
   tipoFila: {
     label: 'Tipo de fila',
     grupo: 'Identificación',
-    alias: ['tiporegistro', 'tipofila', 'origenfila', 'tabla', 'tiporeg', 'origen', 'tipo'],
+    alias: ['tiporegistro', 'tipofila', 'origenfila', 'tiporeg'],
     valores: ['servicio', 'extracosto', 'extra costo', 'extracostos', 'gasto', 'adicional', 'cabecera'],
     usadoPor: 'Distingue la fila base del servicio de sus extracostos.',
   },
@@ -70,7 +70,7 @@ export const CAMPOS: Record<string, CampoDef> = {
     label: 'Cliente',
     requerido: true,
     grupo: 'Identificación',
-    alias: ['nombrecliente', 'cliente', 'razonsocial', 'clientenombre', 'nomcliente', 'desccliente', 'empresa', 'customer', 'client'],
+    alias: ['cliente', 'nombrecliente', 'razonsocial', 'clientenombre', 'nomcliente', 'desccliente', 'empresa', 'customer', 'client'],
     usadoPor: 'Cruce con la matriz comercial.',
   },
   mandante: {
@@ -87,8 +87,27 @@ export const CAMPOS: Record<string, CampoDef> = {
   estado: {
     label: 'Estado',
     grupo: 'Identificación',
-    alias: ['estadoservicio', 'estadodocumento', 'estado', 'status', 'situacion', 'etapa', 'estadoos'],
+    alias: ['estado', 'estadoservicio', 'estadodocumento', 'status', 'situacion', 'etapa', 'estadoos'],
     usadoPor: 'Punto de evaluación y detección de cambios entre lecturas.',
+  },
+
+  incidenciaTipo: {
+    label: 'Incidencia · tipo',
+    grupo: 'Identificación',
+    alias: ['ulteventotipo', 'eventotipo', 'incidenciatipo', 'tipoevento', 'tipoincidencia'],
+    usadoPor: 'R-INC-01 (falso flete, redestino, multas).',
+  },
+  incidenciaGravedad: {
+    label: 'Incidencia · gravedad',
+    grupo: 'Identificación',
+    alias: ['ulteventogravedad', 'eventogravedad', 'gravedad', 'severidad'],
+    usadoPor: 'R-INC-01.',
+  },
+  incidenciaComentario: {
+    label: 'Incidencia · comentario',
+    grupo: 'Identificación',
+    alias: ['ulteventocomentario', 'eventocomentario', 'comentarioevento'],
+    usadoPor: 'R-INC-01: texto del evento.',
   },
 
   // --- Comercial ---
@@ -97,14 +116,14 @@ export const CAMPOS: Record<string, CampoDef> = {
     requerido: true,
     tipo: 'numero',
     grupo: 'Comercial',
-    alias: ['totalventa', 'montoventa', 'valorventa', 'venta', 'ventas', 'facturacion', 'facturado', 'precioventa', 'ingreso', 'neto', 'monto', 'total'],
+    alias: ['venta', 'totalventa', 'montoventa', 'valorventa', 'ventas', 'facturacion', 'facturado', 'precioventa', 'ingreso', 'neto', 'monto', 'total'],
     usadoPor: 'R-LIQ-01 (margen), venta sin costo, proyección sin venta.',
   },
   costo: {
     label: 'Costo',
     tipo: 'numero',
     grupo: 'Comercial',
-    alias: ['totalcosto', 'montocosto', 'valorcosto', 'costoventa', 'costo', 'costos', 'gasto', 'compra'],
+    alias: ['costo', 'totalcosto', 'montocosto', 'valorcosto', 'costoventa', 'costos', 'gasto', 'compra'],
     usadoPor: 'R-LIQ-01 (margen), costo sin venta.',
   },
   tarifa: {
@@ -117,7 +136,7 @@ export const CAMPOS: Record<string, CampoDef> = {
   concepto: {
     label: 'Concepto del extracosto',
     grupo: 'Comercial',
-    alias: ['concepto', 'glosa', 'descripcion', 'detalle', 'item', 'nombregasto', 'nombreconcepto', 'tipogasto'],
+    alias: ['producto', 'concepto', 'glosa', 'descripcion', 'detalle', 'item', 'nombregasto', 'nombreconcepto', 'tipogasto'],
     usadoPor: 'R-EXC-01, concepto faltante, validación integral.',
   },
 
@@ -125,16 +144,19 @@ export const CAMPOS: Record<string, CampoDef> = {
   operacion: {
     label: 'Operación (Impo / Expo)',
     grupo: 'Operación',
-    alias: ['tipooperacion', 'operacion', 'trafico', 'sentido', 'impoexpo'],
-    valores: ['impo', 'expo', 'importacion', 'exportacion', 'importación', 'exportación'],
+    // En este reporte la columna `modalidad` es la que trae IMPOD/EXPOD/EXPOR,
+    // no directo/diferido: va aquí, no en el campo "modalidad" de la app.
+    alias: ['modalidad', 'tipooperacion', 'operacion', 'trafico', 'sentido', 'impoexpo'],
+    valores: ['impo', 'expo', 'impod', 'expod', 'impor', 'expor', 'importacion', 'exportacion'],
     usadoPor: 'Selecciona el bloque de reglas R-IMP o R-EXP.',
   },
   modalidad: {
     label: 'Modalidad (Directo / Diferido)',
     grupo: 'Operación',
-    alias: ['tiposervicio', 'condicionpago', 'condicion', 'modalidadservicio', 'tiposervicionombre', 'modalidad', 'modal'],
+    // Y `servicioTipo` es la que trae DIRECTO/DIFERIDO.
+    alias: ['serviciotipo', 'tiposervicio', 'condicionpago', 'condicion', 'modalidadservicio', 'modal'],
     valores: ['directo', 'diferido'],
-    usadoPor: 'R-GEN-04, R-EXC-01.',
+    usadoPor: 'R-GEN-04, R-EXC-01 (almacenaje en diferidos).',
   },
   origen: {
     label: 'Origen',
@@ -144,14 +166,14 @@ export const CAMPOS: Record<string, CampoDef> = {
   destino: {
     label: 'Destino / Planta',
     grupo: 'Operación',
-    alias: ['destino', 'planta', 'ciudaddestino', 'lugarentrega', 'direccionentrega', 'hasta'],
+    alias: ['planta', 'destino', 'ciudaddestino', 'lugarentrega', 'direccionentrega', 'hasta'],
     usadoPor: 'R-IMP-01 (validación de direcciones).',
   },
   peso: {
     label: 'Peso (kg)',
     tipo: 'numero',
     grupo: 'Operación',
-    alias: ['pesokg', 'peso', 'pesobruto', 'kilos', 'kg', 'pesocarga'],
+    alias: ['contpeso', 'pesokg', 'peso', 'pesobruto', 'kilos', 'kg', 'pesocarga'],
     usadoPor: 'R-GEN-02 (peso en blanco), R-GEN-03 (sobrepeso).',
   },
   puerto: {
@@ -169,19 +191,19 @@ export const CAMPOS: Record<string, CampoDef> = {
   contenedor: {
     label: 'Contenedor',
     grupo: 'Operación',
-    alias: ['numcontenedor', 'numerocontenedor', 'contenedor', 'container', 'sigla', 'equipo'],
+    alias: ['contnro', 'numcontenedor', 'numerocontenedor', 'contenedor', 'container', 'sigla', 'equipo'],
     usadoPor: 'R-EXP-02.',
   },
   tipoContenedor: {
     label: 'Tipo de contenedor',
     grupo: 'Operación',
-    alias: ['tipocontenedor', 'tipoequipo', 'tipocntr', 'medida', 'tamano'],
+    alias: ['conttipo', 'tipocontenedor', 'tipoequipo', 'tipocntr', 'medida', 'tamano'],
     usadoPor: 'Cruce con la matriz comercial.',
   },
   depositoVacio: {
     label: 'Depósito vacío',
     grupo: 'Operación',
-    alias: ['depositovacio', 'depvacio', 'devolucionvacio', 'depositodevolucion'],
+    alias: ['devvacio', 'depositovacio', 'depvacio', 'devolucionvacio', 'depositodevolucion'],
     usadoPor: 'R-IMP-02.',
   },
   depositoRetiro: {
@@ -197,7 +219,7 @@ export const CAMPOS: Record<string, CampoDef> = {
     requerido: true,
     tipo: 'fecha',
     grupo: 'Fechas y tiempos',
-    alias: ['fechaservicio', 'fechaoperacion', 'fechaemision', 'fechafacturacion', 'fechaingreso', 'fechaapertura', 'fechadocumento', 'periodo', 'emision', 'fecha', 'mes'],
+    alias: ['fechaservicio', 'fechaoperacion', 'fechaemision', 'fechafacturacion', 'fechaingreso', 'fechaapertura', 'fechadocumento', 'ventafecha', 'emision', 'fecha'],
     usadoPor: 'Fecha de creación y agrupación por periodo.',
   },
   eta: {
@@ -218,21 +240,21 @@ export const CAMPOS: Record<string, CampoDef> = {
     label: 'Fecha de presentación',
     tipo: 'fecha',
     grupo: 'Fechas y tiempos',
-    alias: ['fechapresentacion', 'presentacion', 'presen'],
+    alias: ['fechapresen', 'fechapresentacion', 'presentacion', 'presen'],
     usadoPor: 'R-EXC-02, R-LIQ-03.',
   },
   fechaStacking: {
     label: 'Fecha de stacking',
     tipo: 'fecha',
     grupo: 'Fechas y tiempos',
-    alias: ['fechastacking', 'stacking', 'iniciostacking'],
+    alias: ['stackingini', 'fechastacking', 'stacking', 'iniciostacking'],
     usadoPor: 'R-EXP-01 (control de stacking).',
   },
   corteDocumental: {
     label: 'Corte documental',
     tipo: 'fecha',
     grupo: 'Fechas y tiempos',
-    alias: ['cortedocumental', 'cortedoc', 'cutoffdoc', 'cutoff'],
+    alias: ['stackingfin', 'cortedocumental', 'cortedoc', 'cutoffdoc', 'cutoff'],
     usadoPor: 'R-EXP-01.',
   },
   inPlanta: {
@@ -305,8 +327,18 @@ export function aNumero(v: unknown): number {
  * Conserva la hora cuando viene: las reglas que miden tiempo (estadía en
  * planta) la necesitan. Descartarla hacía que la diferencia diera siempre cero.
  */
+/**
+ * BIT usa 1900-01-01 como "sin fecha". Tomarlo como fecha real producía
+ * antigüedades de más de un siglo y almacenajes absurdos.
+ */
+export function esFechaNula(v: unknown): boolean {
+  const s = String(v ?? '');
+  return s.startsWith('1900-01-01') || s.startsWith('0001-01-01') || s.startsWith('1899-12-30');
+}
+
 export function aFecha(v: unknown): Date | null {
   if (v == null || v === '') return null;
+  if (esFechaNula(v)) return null;
   if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
 
   const mk = (y: number, mo: number, da: number, h = 0, mi = 0, se = 0): Date | null => {

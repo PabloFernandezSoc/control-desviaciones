@@ -180,9 +180,35 @@ export class EngineService {
     // Las reglas cuyo campo no vino en el reporte quedan apagadas.
     const reglasActivas = this.reglasEfectivas();
 
-    const referenceDate = new Date('2026-08-24');
+    const referenceDate = new Date();
+
+    /**
+     * ¿El servicio ya tiene cobrado un extracosto de este tipo?
+     *
+     * Es el eje de la detección: casi ninguna regla busca un valor fuera de
+     * rango, sino una condición que ocurrió y no se cobró.
+     */
+    const yaCobra = (service: Service, tipo: string): boolean =>
+      (service.extracostosPresentes ?? []).includes(tipo);
+
+    /**
+     * ¿El servicio ya pasó el punto donde los datos deberían estar completos?
+     *
+     * Las reglas de campo obligatorio sólo tienen sentido a partir de aquí: en
+     * proyección y coordinación el peso o la modalidad todavía no se cargan, y
+     * exigirlos convierte el flujo normal de trabajo en miles de hallazgos.
+     */
+    const enPuntoDeEvaluacion = (service: Service): boolean =>
+      service.estado === 'confirmado' ||
+      service.estado === 'en_transito' ||
+      service.estado === 'cerrado' ||
+      service.estado === 'facturado';
 
     for (const service of this.services) {
+      // Un servicio anulado no se factura: cualquier hallazgo sobre él sería
+      // trabajo para nadie. Se deja fuera del análisis y de los totales.
+      if (service.estado === 'anulado') continue;
+
       const rutaStr = `${service.ruta.origen} → ${service.ruta.destino}`;
       const client = this.clients.find(c => c.id === service.clienteId);
       const agreement = this.agreements.find(a => a.clienteId === service.clienteId);
@@ -305,7 +331,7 @@ export class EngineService {
         ? service.pesoKg 
         : (service.proyeccion?.peso !== undefined ? service.proyeccion.peso : 20000);
 
-      if (reglasActivas.R_GEN_02 && (pesoEfectivo <= 0 || isNaN(pesoEfectivo))) {
+      if (reglasActivas.R_GEN_02 && enPuntoDeEvaluacion(service) && (pesoEfectivo <= 0 || isNaN(pesoEfectivo))) {
         addDev({
           id: `DEV-${service.id}-R-GEN-02`,
           idRegla: 'R-GEN-02',
@@ -324,29 +350,31 @@ export class EngineService {
         });
       }
 
-      // R-GEN-03: Sobrepeso (> 25.000 kg o tope definido)
-      if (reglasActivas.R_GEN_03 && pesoEfectivo > topePesoKg) {
+      // R-GEN-03: Sobrepeso sin extracosto de sobrepeso cobrado.
+      // Que haya sobrepeso no es una desviación si ya se cobró: lo es cuando la
+      // condición ocurrió y no aparece el extracosto correspondiente.
+      if (reglasActivas.R_GEN_03 && pesoEfectivo > topePesoKg && !yaCobra(service, 'sobrepeso')) {
         addDev({
           id: `DEV-${service.id}-R-GEN-03`,
           idRegla: 'R-GEN-03',
           severidad: 'Media',
           categoriaRegla: 'Generales',
           tipo: 'sobrepeso',
-          mensaje: `Sobrepeso detectado: ${pesoEfectivo.toLocaleString('es-CL')} kg supera el tope legal de ${topePesoKg.toLocaleString('es-CL')} kg`,
-          campoAfectado: 'Peso Declarado',
+          mensaje: `Sobrepeso de ${pesoEfectivo.toLocaleString('es-CL')} kg sin extracosto de sobrepeso cobrado`,
+          campoAfectado: 'Peso Declarado / Extracostos',
           conceptoCodigo: 'SOBREPESO_25T',
-          conceptoNombre: 'Alerta de Sobrepeso > 25 Toneladas',
+          conceptoNombre: 'Extracosto de Sobrepeso Faltante',
           valorEsperado: topePesoKg,
           valorCargado: pesoEfectivo,
           impactoClp: 180000, // Recargo estimado por sobrepeso
           responsableRol: 'costos',
-          detallesExplicacion: `Carga declarada con ${pesoEfectivo.toLocaleString('es-CL')} kg (> 25.000 kg). Requiere verificación de permiso de sobrepeso o cobro de recargo.`
+          detallesExplicacion: `La carga declara ${pesoEfectivo.toLocaleString('es-CL')} kg, sobre el tope de ${topePesoKg.toLocaleString('es-CL')} kg, y el servicio no tiene ninguna línea de extracosto de sobrepeso asociada.`
         });
       }
 
       // R-GEN-04: Modalidad de servicio (campo vacío)
       const modalidadEfectiva = service.modalidad || (service.proyeccion?.modal?.toLowerCase().includes('direct') ? 'directo' : (service.proyeccion?.modal?.toLowerCase().includes('difer') ? 'diferido' : undefined));
-      if (reglasActivas.R_GEN_04 && (!modalidadEfectiva || modalidadEfectiva === 'sin_definir')) {
+      if (reglasActivas.R_GEN_04 && enPuntoDeEvaluacion(service) && (!modalidadEfectiva || modalidadEfectiva === 'sin_definir')) {
         addDev({
           id: `DEV-${service.id}-R-GEN-04`,
           idRegla: 'R-GEN-04',
@@ -365,9 +393,13 @@ export class EngineService {
         });
       }
 
-      // R-GEN-05: Estadía (horas entre In planta y Out planta > umbral)
+      // R-GEN-05: Sobrestadía sin extracosto de sobrestadía cobrado.
       const horasEstadia = service.horasEstadia || 0;
-      if (reglasActivas.R_GEN_05 && horasEstadia > umbralHorasEstadia) {
+      if (
+        reglasActivas.R_GEN_05 &&
+        horasEstadia > umbralHorasEstadia &&
+        !yaCobra(service, 'sobreestadia')
+      ) {
         const excesoHoras = horasEstadia - umbralHorasEstadia;
         const cobroSobreestadia = Math.round(excesoHoras * 45000); // $45.000 por hora extra
         addDev({
@@ -376,15 +408,15 @@ export class EngineService {
           severidad: 'Media',
           categoriaRegla: 'Generales',
           tipo: 'estadia_excedida',
-          mensaje: `Estadía en planta de ${horasEstadia} hrs supera el umbral acordado de ${umbralHorasEstadia} hrs`,
-          campoAfectado: 'In Planta / Out Planta',
+          mensaje: `Estadía de ${Math.round(horasEstadia)} hrs sin extracosto de sobrestadía cobrado`,
+          campoAfectado: 'In Planta / Out Planta · Extracostos',
           conceptoCodigo: 'SOBREESTADIA_PLANTA',
-          conceptoNombre: 'Horas de Estadía en Planta Excedidas',
+          conceptoNombre: 'Extracosto de Sobrestadía Faltante',
           valorEsperado: umbralHorasEstadia,
           valorCargado: horasEstadia,
           impactoClp: cobroSobreestadia,
           responsableRol: 'costos',
-          detallesExplicacion: `Permanencia de ${horasEstadia} horas en faena supera el tiempo libre (${umbralHorasEstadia} hrs). Requiere cobro de extra costo por sobreestadía.`
+          detallesExplicacion: `Permanencia de ${Math.round(horasEstadia)} horas en faena, sobre el tiempo libre de ${umbralHorasEstadia} hrs, y el servicio no tiene ninguna línea de extracosto de sobrestadía asociada.`
         });
       }
 
@@ -415,7 +447,7 @@ export class EngineService {
         }
 
         // R-IMP-02: Campos obligatorios de Importación
-        if (reglasActivas.R_IMP_02 && service.estado !== 'proyeccion') {
+        if (reglasActivas.R_IMP_02 && enPuntoDeEvaluacion(service)) {
           const missingFields: string[] = [];
           if (!service.contenedores || service.contenedores.length === 0 || !service.contenedores[0].tipo) missingFields.push('Tipo Contenedor');
           if (!service.puerto && !service.proyeccion?.puerto) missingFields.push('Puerto');
@@ -468,7 +500,7 @@ export class EngineService {
         }
 
         // R-EXP-02: Campos obligatorios de Exportación
-        if (reglasActivas.R_EXP_02 && service.estado !== 'proyeccion') {
+        if (reglasActivas.R_EXP_02 && enPuntoDeEvaluacion(service)) {
           const missingExp: string[] = [];
           if (!service.puerto && !service.proyeccion?.puerto) missingExp.push('Puerto');
           if (!service.nave && !service.proyeccion?.nave) missingExp.push('Nave');
@@ -500,9 +532,9 @@ export class EngineService {
       // 5.4 EXTRA COSTOS & ALMACENAJE
       // ----------------------------------------------------
       const isDiferido = modalidadEfectiva === 'diferido' || service.modalidad === 'diferido';
-      const hasAlmacenajeLine = service.lineas.some(
-        l => l.codigo.toUpperCase().includes('ALMACEN') || l.nombreConcepto?.toLowerCase().includes('almacen')
-      );
+      // La taxonomía de extracostos reconoce las decenas de variantes que usa
+      // BIT ("ALMACENAJE M2", "ALMACENAJE SAI 40 DRY", "DIA ADICIONAL...").
+      const hasAlmacenajeLine = yaCobra(service, 'almacenaje');
 
       // R-EXC-01: Servicio Diferido sin Extra Costo de Almacenaje
       if (reglasActivas.R_EXC_01 && isDiferido && !hasAlmacenajeLine) {
@@ -528,7 +560,11 @@ export class EngineService {
 
       // R-EXC-02 & R-LIQ-03: Almacenaje preventivo / Diferencia de días > 2 días
       const diasAlm = service.diasAlmacenaje || 0;
-      if ((reglasActivas.R_EXC_02 || reglasActivas.R_LIQ_03) && isDiferido && diasAlm > umbralDiasAlmacenaje) {
+      if (
+        (reglasActivas.R_EXC_02 || reglasActivas.R_LIQ_03) &&
+        diasAlm > umbralDiasAlmacenaje &&
+        !hasAlmacenajeLine
+      ) {
         const diasExcedentes = diasAlm - umbralDiasAlmacenaje;
         const impactoExtra = diasExcedentes * 65000;
         addDev({
@@ -537,10 +573,10 @@ export class EngineService {
           severidad: 'Media',
           categoriaRegla: 'Extra Costos',
           tipo: 'almacenaje_faltante',
-          mensaje: `Custodia de ${diasAlm} días entre Retiro y Presentación supera el límite libre de ${umbralDiasAlmacenaje} días`,
-          campoAfectado: 'Días de Almacenaje',
+          mensaje: `Custodia de ${diasAlm} días sin extracosto de almacenaje cobrado`,
+          campoAfectado: 'Días de Almacenaje · Extracostos',
           conceptoCodigo: 'DIAS_ALMACENAJE_EXCEDIDOS',
-          conceptoNombre: 'Almacenaje Preventivo (> 2 días)',
+          conceptoNombre: 'Extracosto de Almacenaje Faltante',
           valorEsperado: umbralDiasAlmacenaje,
           valorCargado: diasAlm,
           impactoClp: impactoExtra,
