@@ -1,431 +1,280 @@
 /**
- * Cliente de las fuentes de datos externas.
+ * Cliente del reporte de servicios de BIT.
  *
- * Hay dos orígenes y ambos se consultan por HTTP:
- *   - la API REST de BIT;
- *   - la planilla de Google Sheets, publicada como JSON (Apps Script, Sheets API
- *     con `?alt=json`, o cualquier endpoint que devuelva las filas).
+ * Contrato (el mismo que usa la consulta de Power Query y el dashboard de
+ * evolución de servicios):
  *
- * El contrato exacto de la API todavía no está cerrado, así que la
- * normalización es tolerante: acepta las variantes de nombre habituales
- * (`id_servicio`, `idServicio`, `id`) y deja pasar sin tocar lo que ya viene con
- * la forma interna. Cuando el contrato quede fijo basta con recortar las
- * variantes de `ALIAS`.
+ *   POST https://biterp.cl:451/api/misservicios/reporte/prod-general
+ *   { "apiKey": "...", "perDesde": "2025-01-01", "perHasta": "2026-12-31" }
+ *
+ * La respuesta trae filas de servicio; los extracostos vienen en arreglos
+ * anidados dentro de cada fila y se aplanan como filas hermanas unidas por el
+ * id de servicio. Los nombres de campo no son estables, así que aquí sólo se
+ * obtiene y se aplana: la detección de qué columna es qué vive en
+ * `fieldMapping.ts`.
+ *
+ * Esta es la única fuente de datos de servicios de la aplicación.
  */
 
-import { Service, ServiceState, OperationType, ServiceModality } from '../types';
-
-export type OrigenLectura = 'api' | 'sheets';
-
-export interface EndpointConfig {
-  habilitado: boolean;
+export interface ApiConfig {
   url: string;
-  /** Nombre de la cabecera de autenticación. Vacío = sin autenticación. */
-  headerAuth: string;
-  /** Prefijo del valor: `Bearer`, `Token`, o vacío para mandar la clave cruda. */
-  esquemaAuth: string;
+  metodo: 'POST' | 'GET';
   apiKey: string;
-  /** Ruta dentro del JSON donde viene el arreglo de filas. Vacío = raíz. */
-  rutaDatos: string;
-}
-
-export interface IntegrationConfig {
-  api: EndpointConfig;
-  sheets: EndpointConfig;
+  perDesde: string;
+  perHasta: string;
+  /** Cabeceras extra, por ejemplo un token. */
+  headers: Record<string, string>;
+  /** Webhook o proxy intermedio. Si está definido, se usa en vez de `url`. */
+  proxy: string;
   timeoutMs: number;
 }
 
-export const STORAGE_KEY_INTEGRATION = 'lyd_bit_integration_config_v1';
+export const STORAGE_KEY_API = 'lyd_bit_api_config_v2';
+export const STORAGE_KEY_SNAPSHOT = 'lyd_bit_api_snapshot_v2';
 
-export const defaultIntegrationConfig = (): IntegrationConfig => ({
-  api: {
-    habilitado: false,
-    url: '',
-    headerAuth: 'Authorization',
-    esquemaAuth: 'Bearer',
-    apiKey: '',
-    rutaDatos: 'data',
-  },
-  sheets: {
-    habilitado: false,
-    url: '',
-    headerAuth: '',
-    esquemaAuth: '',
-    apiKey: '',
-    rutaDatos: '',
-  },
-  timeoutMs: 15000,
+/** Rango por defecto: el año en curso completo más el siguiente. */
+function rangoPorDefecto(): { perDesde: string; perHasta: string } {
+  const hoy = new Date();
+  return {
+    perDesde: `${hoy.getFullYear()}-01-01`,
+    perHasta: `${hoy.getFullYear() + 1}-12-31`,
+  };
+}
+
+export const defaultApiConfig = (): ApiConfig => ({
+  url: 'https://biterp.cl:451/api/misservicios/reporte/prod-general',
+  metodo: 'POST',
+  apiKey: '',
+  ...rangoPorDefecto(),
+  headers: {},
+  proxy: '',
+  timeoutMs: 45000,
 });
 
-export function loadIntegrationConfig(): IntegrationConfig {
-  const base = defaultIntegrationConfig();
+export function loadApiConfig(): ApiConfig {
+  const base = defaultApiConfig();
   try {
-    const crudo = localStorage.getItem(STORAGE_KEY_INTEGRATION);
+    const crudo = localStorage.getItem(STORAGE_KEY_API);
     if (!crudo) return base;
-    const guardado = JSON.parse(crudo) as Partial<IntegrationConfig>;
-    return {
-      api: { ...base.api, ...(guardado.api ?? {}) },
-      sheets: { ...base.sheets, ...(guardado.sheets ?? {}) },
-      timeoutMs: guardado.timeoutMs ?? base.timeoutMs,
-    };
+    return { ...base, ...(JSON.parse(crudo) as Partial<ApiConfig>) };
   } catch {
     return base;
   }
 }
 
-export function saveIntegrationConfig(config: IntegrationConfig): void {
+export function saveApiConfig(config: ApiConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY_INTEGRATION, JSON.stringify(config));
+    localStorage.setItem(STORAGE_KEY_API, JSON.stringify(config));
   } catch (e) {
-    console.error('No se pudo persistir la configuración de integración:', e);
+    console.error('No se pudo persistir la configuración de la API:', e);
   }
 }
 
-/** ¿Hay al menos una fuente remota configurada y activa? */
-export function hayFuenteRemota(config: IntegrationConfig): boolean {
-  return (
-    (config.api.habilitado && config.api.url.trim() !== '') ||
-    (config.sheets.habilitado && config.sheets.url.trim() !== '')
-  );
+export function apiEstaConfigurada(config: ApiConfig): boolean {
+  const destino = (config.proxy || config.url).trim();
+  return destino !== '' && (config.proxy.trim() !== '' || config.apiKey.trim() !== '');
 }
 
-// ---------------------------------------------------------------------------
-// Transporte
-// ---------------------------------------------------------------------------
-
-export class IntegrationError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
-    readonly origen: OrigenLectura,
     readonly status?: number,
   ) {
     super(message);
-    this.name = 'IntegrationError';
+    this.name = 'ApiError';
   }
 }
 
-function extraerArreglo(cuerpo: unknown, rutaDatos: string): unknown[] {
-  let actual: any = cuerpo;
-  if (rutaDatos.trim() !== '') {
-    for (const parte of rutaDatos.split('.')) {
-      if (actual == null || typeof actual !== 'object') break;
-      actual = actual[parte];
-    }
-  }
-  if (Array.isArray(actual)) return actual;
-  if (Array.isArray(cuerpo)) return cuerpo as unknown[];
-  // Formatos habituales cuando `rutaDatos` no acierta.
-  for (const clave of ['data', 'items', 'results', 'registros', 'servicios', 'values', 'rows']) {
-    const candidato = (cuerpo as any)?.[clave];
-    if (Array.isArray(candidato)) return candidato;
-  }
-  return [];
+// ---------------------------------------------------------------------------
+// Copia local de la última respuesta
+// ---------------------------------------------------------------------------
+
+export interface Snapshot {
+  /** Fecha legible de la lectura. */
+  t: string;
+  /** Respuesta cruda tal como llegó. */
+  d: unknown;
 }
 
-async function leerEndpoint(
-  endpoint: EndpointConfig,
-  origen: OrigenLectura,
-  timeoutMs: number,
-): Promise<unknown[]> {
-  const url = endpoint.url.trim();
-  if (!url) {
-    throw new IntegrationError(`La URL de ${etiquetaOrigen(origen)} no está configurada.`, origen);
+export function guardarSnapshot(crudo: unknown): void {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY_SNAPSHOT,
+      JSON.stringify({ t: new Date().toISOString(), d: crudo } satisfies Snapshot),
+    );
+  } catch {
+    // Una respuesta muy grande puede exceder la cuota: no es motivo para fallar.
+  }
+}
+
+export function leerSnapshot(): Snapshot | null {
+  try {
+    const crudo = localStorage.getItem(STORAGE_KEY_SNAPSHOT);
+    if (!crudo) return null;
+    const snap = JSON.parse(crudo) as Snapshot;
+    return snap && snap.d !== undefined ? snap : null;
+  } catch {
+    return null;
+  }
+}
+
+export function borrarSnapshot(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY_SNAPSHOT);
+  } catch {
+    /* nada que hacer */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Consulta
+// ---------------------------------------------------------------------------
+
+export interface RespuestaApi {
+  crudo: unknown;
+  ms: number;
+}
+
+export async function consultarApi(config: ApiConfig): Promise<RespuestaApi> {
+  const destino = (config.proxy || config.url).trim();
+  if (!destino) {
+    throw new ApiError('No hay URL configurada para el reporte de servicios.');
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
 
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  const header = endpoint.headerAuth.trim();
-  const clave = endpoint.apiKey.trim();
-  if (header && clave) {
-    const esquema = endpoint.esquemaAuth.trim();
-    headers[header] = esquema ? `${esquema} ${clave}` : clave;
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(config.metodo === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+    ...config.headers,
+  };
+
+  const opciones: RequestInit = { method: config.metodo, headers, signal: controller.signal };
+  if (config.metodo === 'POST') {
+    opciones.body = JSON.stringify({
+      apiKey: config.apiKey,
+      perDesde: config.perDesde,
+      perHasta: config.perHasta,
+    });
   }
 
+  const t0 = performance.now();
   try {
-    const respuesta = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-
+    const respuesta = await fetch(destino, opciones);
     if (!respuesta.ok) {
-      throw new IntegrationError(
-        `${etiquetaOrigen(origen)} respondió ${respuesta.status} ${respuesta.statusText}.`,
-        origen,
+      throw new ApiError(
+        `La API respondió ${respuesta.status} ${respuesta.statusText}.`,
         respuesta.status,
       );
     }
-
-    const cuerpo = await respuesta.json();
-    return extraerArreglo(cuerpo, endpoint.rutaDatos);
+    const crudo = await respuesta.json();
+    return { crudo, ms: Math.round(performance.now() - t0) };
   } catch (e) {
-    if (e instanceof IntegrationError) throw e;
+    if (e instanceof ApiError) throw e;
     if ((e as Error)?.name === 'AbortError') {
-      throw new IntegrationError(
-        `${etiquetaOrigen(origen)} no respondió en ${Math.round(timeoutMs / 1000)} s.`,
-        origen,
-      );
+      throw new ApiError(`La API no respondió en ${Math.round(config.timeoutMs / 1000)} s.`);
     }
-    throw new IntegrationError(
-      `No se pudo leer ${etiquetaOrigen(origen)}: ${(e as Error)?.message ?? 'error desconocido'}.`,
-      origen,
+    // Un fallo de red con `fetch` no distingue CORS de host caído; se nombran
+    // las dos causas porque son las que aparecen en la práctica.
+    throw new ApiError(
+      `No se pudo contactar la API (${(e as Error)?.message ?? 'error de red'}). ` +
+        'Revisa la URL, que el certificado sea válido y que el servidor permita CORS desde este dominio.',
     );
   } finally {
     clearTimeout(timer);
   }
 }
 
-export function etiquetaOrigen(origen: OrigenLectura): string {
-  return origen === 'api' ? 'la API' : 'Google Sheets';
-}
-
 // ---------------------------------------------------------------------------
-// Normalización
+// Extracción y aplanado
 // ---------------------------------------------------------------------------
 
-/** Variantes de nombre aceptadas para cada campo interno. */
-const ALIAS: Record<string, string[]> = {
-  id: ['id', 'id_servicio', 'idServicio', 'ID SERVICIO', 'servicio_id', 'numero_servicio'],
-  clienteId: ['clienteId', 'id_cliente', 'idCliente', 'cliente_id'],
-  clienteNombre: ['clienteNombre', 'nombre_cliente', 'nombreCliente', 'cliente', 'MANDANTE', 'mandante'],
-  ejecutivo: ['ejecutivo', 'ejecutivo_comercial', 'ejecutivoComercial', 'EJECUTIVO'],
-  estado: ['estado', 'status', 'estado_servicio', 'estadoServicio', 'ESTADO'],
-  fechaCreacion: ['fechaCreacion', 'fecha_creacion', 'created_at', 'createdAt'],
-  tipoOperacion: ['tipoOperacion', 'tipo_operacion', 'tipo_serv', 'tipoServ', 'TIPO SERV'],
-  modalidad: ['modalidad', 'modal', 'MODAL'],
-  pesoKg: ['pesoKg', 'peso_kg', 'peso', 'PESO'],
-  puerto: ['puerto', 'PUERTO'],
-  nave: ['nave', 'NAVE'],
-  depositoVacio: ['depositoVacio', 'deposito_vacio', 'DEP. VACÍO'],
-  depositoRetiro: ['depositoRetiro', 'deposito_retiro', 'DEP. RETIRO'],
-  fechaStacking: ['fechaStacking', 'fecha_stacking', 'stacking', 'STACKING'],
-  corteDocumental: ['corteDocumental', 'corte_documental', 'corte_doc', 'CORTE DOC'],
-  inPlanta: ['inPlanta', 'in_planta', 'IN PLANTA'],
-  outPlanta: ['outPlanta', 'out_planta', 'OUT PLANTA'],
-  fechaRetiro: ['fechaRetiro', 'fecha_retiro', 'retiro', 'RETIRO'],
-  fechaPresentacion: ['fechaPresentacion', 'fecha_presentacion', 'presen', 'PRESEN'],
-  diasAlmacenaje: ['diasAlmacenaje', 'dias_almacenaje', 'dias_alm', 'DÍAS ALM.'],
-  horasEstadia: ['horasEstadia', 'horas_estadia'],
-  direccionPlanta: ['direccionPlanta', 'direccion_planta', 'direccion', 'DIRECCIÓN'],
-  direccionPorConfirmar: ['direccionPorConfirmar', 'direccion_por_confirmar', 'DIR. POR CONFIRMAR'],
-  aptoFacturacion: ['aptoFacturacion', 'apto_facturacion'],
-  notas: ['notas', 'observaciones', 'OBSERVACIONES', 'nota', 'comentarios'],
-  lineas: ['lineas', 'lines', 'conceptos', 'detalle'],
-  contenedores: ['contenedores', 'containers'],
-  proyeccion: ['proyeccion', 'projection'],
-  atributosEspeciales: ['atributosEspeciales', 'atributos_especiales'],
-  incidencias: ['incidencias', 'incidents'],
-  ruta: ['ruta', 'route'],
-};
-
-function tomar(fila: Record<string, any>, campo: string): unknown {
-  for (const alias of ALIAS[campo] ?? [campo]) {
-    if (alias in fila && fila[alias] !== null && fila[alias] !== '') return fila[alias];
-  }
-  return undefined;
-}
-
-const ESTADOS_VALIDOS: ServiceState[] = [
-  'proyeccion', 'borrador', 'confirmado', 'en_transito', 'cerrado', 'facturado',
-];
-
-function normalizarEstado(valor: unknown): ServiceState | undefined {
-  if (valor === undefined || valor === null) return undefined;
-  const bruto = String(valor).trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if ((ESTADOS_VALIDOS as string[]).includes(bruto)) return bruto as ServiceState;
-
-  // Equivalencias con la nomenclatura operacional de BIT.
-  const equivalencias: Record<string, ServiceState> = {
-    proyeccion_de_carga: 'proyeccion',
-    en_coordinacion: 'borrador',
-    coordinado: 'confirmado',
-    en_curso: 'en_transito',
-    en_ruta: 'en_transito',
-    finalizado: 'cerrado',
-    liquidado: 'facturado',
-    pendiente: 'borrador',
-    completado: 'cerrado',
-  };
-  return equivalencias[bruto];
-}
-
-function aNumero(valor: unknown): number | undefined {
-  if (valor === undefined || valor === null || valor === '') return undefined;
-  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : undefined;
-  const limpio = String(valor).replace(/[^\d,.-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.');
-  const n = Number(limpio);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function aBooleano(valor: unknown): boolean | undefined {
-  if (valor === undefined || valor === null || valor === '') return undefined;
-  if (typeof valor === 'boolean') return valor;
-  const bruto = String(valor).trim().toLowerCase();
-  if (['true', '1', 'si', 'sí', 'x', 'y', 'yes'].includes(bruto)) return true;
-  if (['false', '0', 'no', 'n'].includes(bruto)) return false;
-  return undefined;
-}
-
-const TIPOS_OPERACION: OperationType[] = ['importacion', 'exportacion', 'nacional'];
-const MODALIDADES: ServiceModality[] = ['directo', 'diferido', 'sin_definir'];
-
-function normalizarTipoOperacion(valor: unknown): OperationType | undefined {
-  if (valor === undefined || valor === null) return undefined;
-  const bruto = String(valor).trim().toLowerCase();
-  if ((TIPOS_OPERACION as string[]).includes(bruto)) return bruto as OperationType;
-  if (bruto.startsWith('impo')) return 'importacion';
-  if (bruto.startsWith('expo')) return 'exportacion';
-  if (bruto.startsWith('nac')) return 'nacional';
-  return undefined;
-}
-
-function normalizarModalidad(valor: unknown): ServiceModality | undefined {
-  if (valor === undefined || valor === null) return undefined;
-  const bruto = String(valor).trim().toLowerCase();
-  if ((MODALIDADES as string[]).includes(bruto)) return bruto as ServiceModality;
-  if (bruto.startsWith('direct')) return 'directo';
-  if (bruto.startsWith('difer')) return 'diferido';
-  return undefined;
-}
-
-function asignarSiDefinido(destino: Record<string, any>, clave: string, valor: unknown): void {
-  if (valor !== undefined) destino[clave] = valor;
-}
+export type FilaCruda = Record<string, unknown>;
 
 /**
- * Convierte una fila cruda de cualquiera de las dos fuentes en la forma interna
- * `Service`. Los campos que la fila no traiga quedan sin definir, para que el
- * cruce de `mergeDataSources` pueda completarlos con la otra fuente.
+ * Busca dentro de la respuesta el arreglo de objetos más grande. La API puede
+ * devolver el arreglo en la raíz o envuelto en un sobre (`data`, `result`,
+ * `Table`…), y el nombre del sobre ha cambiado entre versiones.
  */
-export function normalizarServicio(crudo: unknown): Partial<Service> | null {
-  if (crudo == null || typeof crudo !== 'object') return null;
-  const fila = crudo as Record<string, any>;
+export function extraerArreglo(json: unknown): FilaCruda[] {
+  if (!json) return [];
+  if (Array.isArray(json) && json.length && typeof json[0] === 'object') return json as FilaCruda[];
 
-  const id = tomar(fila, 'id');
-  if (id === undefined) return null;
-
-  const servicio: Record<string, any> = { id: String(id) };
-
-  asignarSiDefinido(servicio, 'clienteId', tomar(fila, 'clienteId') as string | undefined);
-  asignarSiDefinido(servicio, 'clienteNombre', tomar(fila, 'clienteNombre') as string | undefined);
-  asignarSiDefinido(servicio, 'ejecutivo', tomar(fila, 'ejecutivo') as string | undefined);
-  asignarSiDefinido(servicio, 'estado', normalizarEstado(tomar(fila, 'estado')));
-  asignarSiDefinido(servicio, 'fechaCreacion', tomar(fila, 'fechaCreacion') as string | undefined);
-  asignarSiDefinido(servicio, 'tipoOperacion', normalizarTipoOperacion(tomar(fila, 'tipoOperacion')));
-  asignarSiDefinido(servicio, 'modalidad', normalizarModalidad(tomar(fila, 'modalidad')));
-  asignarSiDefinido(servicio, 'pesoKg', aNumero(tomar(fila, 'pesoKg')));
-  asignarSiDefinido(servicio, 'puerto', tomar(fila, 'puerto') as string | undefined);
-  asignarSiDefinido(servicio, 'nave', tomar(fila, 'nave') as string | undefined);
-  asignarSiDefinido(servicio, 'depositoVacio', tomar(fila, 'depositoVacio') as string | undefined);
-  asignarSiDefinido(servicio, 'depositoRetiro', tomar(fila, 'depositoRetiro') as string | undefined);
-  asignarSiDefinido(servicio, 'fechaStacking', tomar(fila, 'fechaStacking') as string | undefined);
-  asignarSiDefinido(servicio, 'corteDocumental', tomar(fila, 'corteDocumental') as string | undefined);
-  asignarSiDefinido(servicio, 'inPlanta', tomar(fila, 'inPlanta') as string | undefined);
-  asignarSiDefinido(servicio, 'outPlanta', tomar(fila, 'outPlanta') as string | undefined);
-  asignarSiDefinido(servicio, 'fechaRetiro', tomar(fila, 'fechaRetiro') as string | undefined);
-  asignarSiDefinido(servicio, 'fechaPresentacion', tomar(fila, 'fechaPresentacion') as string | undefined);
-  asignarSiDefinido(servicio, 'diasAlmacenaje', aNumero(tomar(fila, 'diasAlmacenaje')));
-  asignarSiDefinido(servicio, 'horasEstadia', aNumero(tomar(fila, 'horasEstadia')));
-  asignarSiDefinido(servicio, 'direccionPlanta', tomar(fila, 'direccionPlanta') as string | undefined);
-  asignarSiDefinido(servicio, 'direccionPorConfirmar', aBooleano(tomar(fila, 'direccionPorConfirmar')));
-  asignarSiDefinido(servicio, 'aptoFacturacion', aBooleano(tomar(fila, 'aptoFacturacion')));
-  asignarSiDefinido(servicio, 'notas', tomar(fila, 'notas') as string | undefined);
-
-  // Estructuras anidadas: se aceptan tal cual si vienen con la forma esperada.
-  const lineas = tomar(fila, 'lineas');
-  if (Array.isArray(lineas)) servicio.lineas = lineas;
-
-  const contenedores = tomar(fila, 'contenedores');
-  if (Array.isArray(contenedores)) servicio.contenedores = contenedores;
-
-  const proyeccion = tomar(fila, 'proyeccion');
-  if (proyeccion && typeof proyeccion === 'object') servicio.proyeccion = proyeccion;
-
-  const atributos = tomar(fila, 'atributosEspeciales');
-  if (atributos && typeof atributos === 'object') servicio.atributosEspeciales = atributos;
-
-  const incidencias = tomar(fila, 'incidencias');
-  if (incidencias && typeof incidencias === 'object') servicio.incidencias = incidencias;
-
-  const ruta = tomar(fila, 'ruta');
-  if (ruta && typeof ruta === 'object') {
-    servicio.ruta = { origen: (ruta as any).origen ?? '', destino: (ruta as any).destino ?? '' };
-  } else {
-    const origen = fila.origen ?? fila.ORIGEN ?? fila.ruta_origen;
-    const destino = fila.destino ?? fila.PLANTA ?? fila.planta ?? fila.ruta_destino;
-    if (origen !== undefined || destino !== undefined) {
-      servicio.ruta = { origen: origen ?? '', destino: destino ?? '' };
+  let mejor: FilaCruda[] = [];
+  const recorrer = (nodo: unknown, profundidad: number): void => {
+    if (!nodo || typeof nodo !== 'object' || profundidad > 6) return;
+    if (Array.isArray(nodo)) {
+      if (nodo.length && typeof nodo[0] === 'object' && !Array.isArray(nodo[0])) {
+        if (nodo.length > mejor.length) mejor = nodo as FilaCruda[];
+        nodo.slice(0, 3).forEach((x) => recorrer(x, profundidad + 1));
+      }
+      return;
     }
-  }
-
-  return servicio as Partial<Service>;
+    for (const clave of Object.keys(nodo)) {
+      recorrer((nodo as Record<string, unknown>)[clave], profundidad + 1);
+    }
+  };
+  recorrer(json, 0);
+  return mejor;
 }
 
-export interface LecturaFuente {
-  origen: OrigenLectura;
-  registros: Partial<Service>[];
-  /** Filas que llegaron sin llave primaria y se descartaron. */
-  descartadas: number;
-}
+/** Marca que distingue la fila base de un servicio de sus extracostos. */
+export const TIPO_FILA = '__tipoFila';
 
-async function leerFuente(
-  endpoint: EndpointConfig,
-  origen: OrigenLectura,
-  timeoutMs: number,
-): Promise<LecturaFuente> {
-  const filas = await leerEndpoint(endpoint, origen, timeoutMs);
-  const registros: Partial<Service>[] = [];
-  let descartadas = 0;
+/**
+ * Aplana los registros anidados.
+ *
+ * Un objeto anidado se expande con prefijo (`cliente_nombre`). Un arreglo de
+ * objetos se interpreta como los extracostos del servicio: cada elemento sale
+ * como fila hermana, marcada con `__tipoFila: 'EXTRACOSTO'` y heredando el id
+ * de servicio de su fila base.
+ */
+export function aplanar(filas: FilaCruda[]): FilaCruda[] {
+  const salida: FilaCruda[] = [];
 
   for (const fila of filas) {
-    const normalizado = normalizarServicio(fila);
-    if (normalizado) registros.push(normalizado);
-    else descartadas++;
-  }
+    if (!fila || typeof fila !== 'object') continue;
 
-  return { origen, registros, descartadas };
-}
+    const hijos: { clave: string; valor: FilaCruda[] }[] = [];
+    const plano: FilaCruda = {};
 
-export interface LecturaCombinada {
-  api: LecturaFuente | null;
-  sheets: LecturaFuente | null;
-  /** Fuentes que fallaron. La lectura continúa con las que sí respondieron. */
-  errores: IntegrationError[];
-}
-
-/**
- * Lee las fuentes activas en paralelo. Si una falla, se reporta el error pero se
- * conserva el resultado de la otra: es preferible actualizar a medias con aviso
- * que dejar la pantalla congelada.
- */
-export async function leerFuentes(config: IntegrationConfig): Promise<LecturaCombinada> {
-  const tareas: Promise<LecturaFuente>[] = [];
-  const origenes: OrigenLectura[] = [];
-
-  if (config.api.habilitado && config.api.url.trim()) {
-    tareas.push(leerFuente(config.api, 'api', config.timeoutMs));
-    origenes.push('api');
-  }
-  if (config.sheets.habilitado && config.sheets.url.trim()) {
-    tareas.push(leerFuente(config.sheets, 'sheets', config.timeoutMs));
-    origenes.push('sheets');
-  }
-
-  const resultados = await Promise.allSettled(tareas);
-
-  const combinada: LecturaCombinada = { api: null, sheets: null, errores: [] };
-
-  resultados.forEach((resultado, i) => {
-    const origen = origenes[i];
-    if (resultado.status === 'fulfilled') {
-      combinada[origen] = resultado.value;
-    } else {
-      const razon = resultado.reason;
-      combinada.errores.push(
-        razon instanceof IntegrationError
-          ? razon
-          : new IntegrationError(String(razon?.message ?? razon), origen),
-      );
+    for (const clave of Object.keys(fila)) {
+      const valor = fila[clave];
+      if (Array.isArray(valor) && valor.length && typeof valor[0] === 'object') {
+        hijos.push({ clave, valor: valor as FilaCruda[] });
+      } else if (valor && typeof valor === 'object' && !(valor instanceof Date)) {
+        for (const sub of Object.keys(valor as object)) {
+          plano[`${clave}_${sub}`] = (valor as Record<string, unknown>)[sub];
+        }
+      } else {
+        plano[clave] = valor;
+      }
     }
-  });
 
-  return combinada;
+    salida.push(plano);
+
+    for (const hijo of hijos) {
+      for (const extra of hijo.valor) {
+        const filaExtra: FilaCruda = { ...extra };
+        // Si el extracosto no trae su propio id de servicio, hereda el del padre.
+        const traeId = Object.keys(filaExtra).some((k) => /id[_\s-]?servicio/i.test(k));
+        if (!traeId) {
+          const claveId = Object.keys(plano).find((k) => /id[_\s-]?servicio|^id$/i.test(k));
+          if (claveId) filaExtra[claveId] = plano[claveId];
+        }
+        filaExtra[TIPO_FILA] = 'EXTRACOSTO';
+        salida.push(filaExtra);
+      }
+    }
+
+    if (hijos.length) plano[TIPO_FILA] = 'SERVICIO';
+  }
+
+  return salida;
+}
+
+/** Obtiene y deja las filas listas para mapear. */
+export function filasDesdeRespuesta(crudo: unknown): FilaCruda[] {
+  return aplanar(extraerArreglo(crudo));
 }

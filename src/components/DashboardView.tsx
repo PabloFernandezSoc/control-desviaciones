@@ -34,7 +34,7 @@ import { Service } from '../types';
 interface DashboardViewProps {
   projectionServices: Service[];
   allServices: Service[];
-  onSelectService?: (serviceId: string) => void;
+  onSelectService?: (service: Service) => void;
 }
 
 // Color palettes for sleek dark/modern UI
@@ -204,7 +204,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // 5. Data Breakdown by Week / Day (ETA / Presentación)
   const timelineChartData = useMemo(() => {
     if (timeMode === 'semana') {
-      const weekMap = new Map<string, { label: string; semanaKey: number; servicios: number; ventaClp: number }>();
+      const weekMap = new Map<string, { label: string; semanaKey: number; rawDate: Date | null; servicios: number; ventaClp: number }>();
 
       filteredServices.forEach(s => {
         const p = s.proyeccion;
@@ -224,7 +224,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         const lineSales = s.lineas.filter(l => l.tipo === 'venta').reduce((sum, l) => sum + l.valor, 0);
         const estimatedSale = lineSales > 0 ? lineSales : (p.tarifaPactadaClp + p.ventaAdicClp);
 
-        const curr = weekMap.get(key) || { label: key, semanaKey: weekNum, servicios: 0, ventaClp: 0 };
+        const curr = weekMap.get(key) || { label: key, semanaKey: weekNum, rawDate: dateObj, servicios: 0, ventaClp: 0 };
         curr.servicios += 1;
         curr.ventaClp += estimatedSale;
         weekMap.set(key, curr);
@@ -233,7 +233,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return Array.from(weekMap.values()).sort((a, b) => a.semanaKey - b.semanaKey);
     } else {
       // Por día en base a ETA
-      const dayMap = new Map<string, { label: string; rawDate: Date | null; servicios: number; ventaClp: number }>();
+      const dayMap = new Map<string, { label: string; semanaKey: number; rawDate: Date | null; servicios: number; ventaClp: number }>();
 
       filteredServices.forEach(s => {
         const p = s.proyeccion;
@@ -245,7 +245,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         const lineSales = s.lineas.filter(l => l.tipo === 'venta').reduce((sum, l) => sum + l.valor, 0);
         const estimatedSale = lineSales > 0 ? lineSales : (p.tarifaPactadaClp + p.ventaAdicClp);
 
-        const curr = dayMap.get(dayLabel) || { label: dayLabel, rawDate: dateObj, servicios: 0, ventaClp: 0 };
+        const curr = dayMap.get(dayLabel) || { label: dayLabel, semanaKey: 0, rawDate: dateObj, servicios: 0, ventaClp: 0 };
         curr.servicios += 1;
         curr.ventaClp += estimatedSale;
         dayMap.set(dayLabel, curr);
@@ -879,7 +879,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <td className="py-2.5 px-3 text-center">
                         {onSelectService && (
                           <button
-                            onClick={() => onSelectService(s.id)}
+                            onClick={() => onSelectService(s)}
                             className="text-[11px] bg-blue-600 hover:bg-blue-500 text-white font-semibold px-2.5 py-1 rounded transition-colors flex items-center gap-1 mx-auto"
                           >
                             <span>Ver Ficha</span>

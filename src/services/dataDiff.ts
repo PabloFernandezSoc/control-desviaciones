@@ -6,7 +6,16 @@
  * puede reutilizar tal cual desde un worker, un test o el backend.
  */
 
-import { getPath } from './dataSources';
+/** Lee una ruta con notación de punto (`proyeccion.eta`). */
+function getPath(objeto: unknown, ruta: string): unknown {
+  if (objeto == null) return undefined;
+  let actual: unknown = objeto;
+  for (const parte of ruta.split('.')) {
+    if (actual == null || typeof actual !== 'object') return undefined;
+    actual = (actual as Record<string, unknown>)[parte];
+  }
+  return actual;
+}
 
 export interface RegistroNuevo {
   id: string;

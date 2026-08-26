@@ -4,8 +4,12 @@ Es una aplicación **estática**: HTML, CSS y JavaScript. No hay backend, no hay
 base de datos, no hay proceso Node corriendo en el servidor. Se genera el build,
 se copian los archivos y funciona.
 
-Todo el estado (datos, mapeo de campos, configuración de las fuentes) vive en el
-`localStorage` del navegador de cada usuario.
+Los servicios los entrega la API de BIT en cada lectura. Lo único que vive en el
+`localStorage` de cada usuario es la configuración: conexión, correcciones del
+mapeo, matriz comercial, umbrales y triaje de desviaciones — más una copia de la
+última respuesta, para poder trabajar si la API cae.
+
+La aplicación **no escribe en el ERP**: sólo lee y organiza.
 
 ---
 
@@ -83,48 +87,71 @@ En Apache, el equivalente es un `.htaccess` dentro de la carpeta con
 npm run build:standalone   # -> app/dist-standalone/control-desviaciones.html
 ```
 
-Un único HTML de ~860 kB, sin dependencias externas. Sirve para:
+Un único HTML de ~830 kB, sin dependencias externas. Sirve para:
 
 - subirlo suelto a cualquier hosting, sin estructura de carpetas;
 - mandarlo por correo o por Drive para que alguien lo revise;
 - abrirlo con doble clic, sin servidor.
 
-Con el archivo abierto desde el disco (`file://`) funciona todo salvo la lectura
-de las fuentes remotas: los navegadores bloquean esas peticiones por CORS. Para
-conectarlo con la API hay que servirlo por HTTP.
+Con el archivo abierto desde el disco (`file://`) la interfaz funciona, pero no
+puede leer la API: los navegadores bloquean esas peticiones desde `file://`. Sí
+muestra la copia local si el navegador ya tenía una. Para conectarlo con BIT hay
+que servirlo por HTTP.
 
 ---
 
 ## 4. Antes de conectar la API
 
+Todos los datos salen del reporte de BIT:
+
+```
+POST https://biterp.cl:451/api/misservicios/reporte/prod-general
+{ "apiKey": "...", "perDesde": "2026-01-01", "perHasta": "2026-12-31" }
+```
+
 Tres cosas dependen del entorno y no se resuelven desde el frontend:
 
 | Qué | Dónde se resuelve |
 |---|---|
-| **CORS** | La API tiene que permitir el dominio donde se publique la aplicación (`Access-Control-Allow-Origin`) |
-| **HTTPS** | Si la página se sirve por HTTPS, la API también: el navegador bloquea el contenido mixto |
-| **Credencial** | La clave queda en el navegador de cada usuario. Para producción conviene un proxy propio que la guarde en el servidor |
+| **CORS** | El servidor de BIT tiene que permitir el dominio donde se publique la aplicación (`Access-Control-Allow-Origin`) |
+| **HTTPS** | Si la página se sirve por HTTPS, la API también: el navegador bloquea el contenido mixto. El endpoint ya es HTTPS, pero en el puerto 451 — hay que confirmar que el certificado sea válido para el navegador, no sólo para Power Query |
+| **Credencial** | La `apiKey` queda en el navegador de cada usuario. Para producción conviene un proxy propio |
 
-La configuración de las URLs, la cabecera de autenticación y la clave se hace
-desde la propia aplicación, en la vista **Mapeo de Datos** → *Conexión con las
-fuentes*. No hay variables de entorno ni archivos de configuración que editar
-antes del build.
+La URL, la `apiKey` y el periodo se configuran desde la propia aplicación, en la
+vista **Mapeo de Campos** → *Conexión con BIT*. No hay variables de entorno ni
+archivos que editar antes del build.
 
 ### El proxy recomendado
 
-Si no se quiere exponer la clave, un `location` en el mismo Nginx alcanza:
+Un `location` en el mismo Nginx resuelve CORS y la credencial de una vez:
 
 ```nginx
 location /api/bit/ {
-    proxy_pass https://api.bit.interno/v1/;
-    proxy_set_header Authorization "Bearer LA_CLAVE_REAL";
-    proxy_set_header Host api.bit.interno;
+    proxy_pass https://biterp.cl:451/api/;
+    proxy_set_header Host biterp.cl;
+    proxy_ssl_server_name on;
+
+    # La apiKey no llega nunca al navegador: la inyecta el servidor.
+    proxy_set_header Content-Type application/json;
 }
 ```
 
-Y en la aplicación se configura `https://logity.com/api/bit/servicios` sin clave:
-la agrega el servidor y nunca llega al navegador. De paso desaparece el problema
-de CORS, porque la petición queda en el mismo origen.
+Con eso, en la aplicación se deja el campo **Proxy** apuntando a
+`https://logity.com/api/bit/misservicios/reporte/prod-general`. Como la petición
+queda en el mismo origen, desaparece el problema de CORS.
+
+Si además se quiere que la `apiKey` no viaje desde el navegador, el proxy tiene
+que reescribir el cuerpo — eso ya no lo hace Nginx solo. Lo más simple es un
+webhook intermedio (n8n, un Apps Script, una función serverless) que reciba
+`perDesde` y `perHasta`, agregue la `apiKey` guardada en el servidor y reenvíe.
+Ese webhook es exactamente lo que espera el campo **Proxy**.
+
+### Verificar la conexión
+
+Desde la aplicación: **Mapeo de Campos** → *Probar y leer ahora*. Si responde,
+aparecen las filas recibidas, los servicios construidos y las columnas
+detectadas. Si falla, el aviso dice si fue un error HTTP, un tiempo de espera
+agotado o un problema de red/CORS.
 
 ---
 
@@ -137,5 +164,8 @@ rsync -avz --delete app/dist/ usuario@servidor:/var/www/logity/control-desviacio
 
 Los nombres de los archivos son estables (`app.js`, `app.css`), así que el
 `Cache-Control: no-cache` del `deploy/nginx.conf` es lo que hace que el cambio se
-vea de inmediato. Los datos guardados en el navegador de cada usuario sobreviven
-a la actualización.
+vea de inmediato.
+
+Lo que cada usuario tenga guardado en su navegador sobrevive a la actualización:
+la conexión, las correcciones del mapeo, la matriz comercial y el triaje de
+desviaciones. Los servicios no se guardan — se vuelven a leer de la API.

@@ -2,168 +2,249 @@
  * Orquestación de "Actualizar datos".
  *
  * Un solo paso, en este orden:
- *   1. guarda una referencia del estado anterior (`previousData`);
- *   2. lee las fuentes activas (API y/o Google Sheets);
- *   3. las cruza por la llave primaria respetando el mapeo de origen;
- *   4. compara contra la referencia anterior (diff);
- *   5. aplica el resultado sobre el motor de reglas.
+ *   1. guarda una referencia de la lectura anterior (`previousData`);
+ *   2. consulta el reporte de servicios de BIT;
+ *   3. aplana la respuesta y detecta qué columna es cada campo;
+ *   4. construye los servicios y los entrega al motor de reglas;
+ *   5. compara contra la referencia anterior (diff) para avisar qué cambió.
  *
- * Los mensajes que se muestran al usuario se construyen aparte, con
- * `construirNotificacionesDeDiff`, para que esta función siga siendo pura
- * respecto de la interfaz.
+ * La API es la única fuente de datos. Si falla, se cae a la copia local de la
+ * última respuesta y se avisa; si tampoco hay copia, la pantalla queda vacía
+ * con el motivo a la vista.
  */
 
 import { Service } from '../types';
 import { engineInstance } from './engine';
 import {
-  FieldMappingState,
-  MergeResult,
-  mergeDataSources,
-} from './dataSources';
-import { DiffResult, ToastInput, construirNotificacionesDeDiff, diffData } from './dataDiff';
-import {
-  IntegrationConfig,
-  IntegrationError,
-  hayFuenteRemota,
-  leerFuentes,
-  loadIntegrationConfig,
+  ApiConfig,
+  ApiError,
+  consultarApi,
+  filasDesdeRespuesta,
+  guardarSnapshot,
+  leerSnapshot,
+  loadApiConfig,
 } from './apiClient';
+import {
+  InfoColumna,
+  MapeoCampos,
+  autoMapear,
+  camposRequeridosFaltantes,
+  combinarMapeo,
+  loadMapeo,
+  saveMapeo,
+  CAMPOS,
+} from './fieldMapping';
+import { construirServicios, reglasDesactivadasPorMapeo } from './adapter';
+import { DiffResult, ToastInput, construirNotificacionesDeDiff, diffData } from './dataDiff';
 
-export type ModoActualizacion = 'remoto' | 'maqueta';
+export type OrigenDatos = 'api' | 'copia-local';
 
 export interface RefreshOutcome {
-  modo: ModoActualizacion;
+  origen: OrigenDatos;
   diff: DiffResult;
-  /** Detalle del cruce. Es `null` en modo maqueta, donde no hay dos fuentes. */
-  cruce: MergeResult<Service> | null;
-  /** Fuentes que no respondieron. La actualización sigue con las que sí lo hicieron. */
-  errores: IntegrationError[];
+  /** Columnas encontradas en la respuesta, para la vista de mapeo. */
+  columnas: Record<string, InfoColumna>;
+  mapeo: MapeoCampos;
+  /** Reglas que no se evalúan porque su columna no vino en el reporte. */
+  reglasDesactivadas: { campo: string; label: string; nota: string }[];
+  avisos: string[];
+  filas: number;
+  servicios: number;
+  latenciaMs: number | null;
   timestamp: string;
-  /** Qué fuentes aportaron datos, para redactar los mensajes. */
-  origenes: string[];
-}
-
-const HOY = () => new Date().toISOString().slice(0, 10);
-
-/**
- * Completa un registro parcial hasta la forma que el motor de reglas espera.
- * Los campos que la lectura no trajo se toman del servicio local existente y,
- * si el servicio es nuevo, de un valor por defecto inofensivo: el motor debe
- * poder evaluarlo sin reventar, aunque después marque campos obligatorios
- * vacíos, que es justamente lo que tiene que detectar.
- */
-export function completarServicio(parcial: Partial<Service>, previo?: Service): Service {
-  const base = previo ?? ({} as Partial<Service>);
-  return {
-    ...base,
-    ...parcial,
-    id: String(parcial.id ?? base.id ?? ''),
-    clienteId: parcial.clienteId ?? base.clienteId ?? '',
-    clienteNombre: parcial.clienteNombre ?? base.clienteNombre ?? 'Sin identificar',
-    ejecutivo: parcial.ejecutivo ?? base.ejecutivo ?? 'Sin asignar',
-    ruta: parcial.ruta ?? base.ruta ?? { origen: '', destino: '' },
-    contenedores: parcial.contenedores ?? base.contenedores ?? [],
-    estado: parcial.estado ?? base.estado ?? 'borrador',
-    fechaCreacion: parcial.fechaCreacion ?? base.fechaCreacion ?? HOY(),
-    lineas: parcial.lineas ?? base.lineas ?? [],
-  } as Service;
+  /** Presente cuando se usó la copia local por un fallo de la API. */
+  errorApi: ApiError | null;
 }
 
 /**
- * Ejecuta una actualización completa y devuelve qué cambió.
- *
- * Si no hay ninguna fuente remota configurada trabaja en modo maqueta sobre los
- * datos guardados en el navegador, para que la pantalla siga siendo usable en
- * una demo sin conexión.
- *
- * Lanza `IntegrationError` sólo cuando todas las fuentes activas fallaron: en
- * ese caso no hay nada que aplicar y el estado local queda intacto.
+ * Procesa una respuesta cruda: filas -> mapeo -> servicios -> motor.
+ * Se usa tanto para la respuesta en vivo como para la copia local.
  */
-export async function actualizarDatos(
-  mapeo: FieldMappingState,
-  config: IntegrationConfig = loadIntegrationConfig(),
-): Promise<RefreshOutcome> {
-  // 1. Referencia del estado anterior, antes de tocar nada.
-  const previousData = engineInstance.getServices().map((s) => ({ ...s }));
+function procesarRespuesta(crudo: unknown): {
+  columnas: Record<string, InfoColumna>;
+  mapeo: MapeoCampos;
+  servicios: Service[];
+  avisos: string[];
+  filas: number;
+  reglasDesactivadas: { campo: string; label: string; nota: string }[];
+} {
+  const filas = filasDesdeRespuesta(crudo);
 
-  // Modo maqueta: sin fuentes remotas, se mueve la data local.
-  if (!hayFuenteRemota(config)) {
-    engineInstance.simulateSync();
-    const newData = engineInstance.getServices();
+  if (filas.length === 0) {
     return {
-      modo: 'maqueta',
-      diff: diffData(previousData, newData),
-      cruce: null,
-      errores: [],
-      timestamp: engineInstance.getLastSyncTime(),
-      origenes: ['los datos de maqueta'],
+      columnas: {},
+      mapeo: {},
+      servicios: [],
+      avisos: ['La respuesta no contiene filas de servicio.'],
+      filas: 0,
+      reglasDesactivadas: [],
     };
   }
 
-  // 2. Lectura de las fuentes activas.
-  const lectura = await leerFuentes(config);
+  // Detección automática, corregida con lo que el usuario haya fijado a mano.
+  const deteccion = autoMapear(filas);
+  const mapeo = combinarMapeo(deteccion.mapeo, loadMapeo(), deteccion.columnas);
 
-  if (!lectura.api && !lectura.sheets) {
-    throw lectura.errores[0] ??
-      new IntegrationError('Ninguna fuente de datos respondió.', 'api');
+  const avisos: string[] = [];
+  const faltantes = camposRequeridosFaltantes(mapeo);
+  if (faltantes.length > 0) {
+    avisos.push(
+      `No se pudo identificar ${faltantes.map((f) => `"${CAMPOS[f].label}"`).join(', ')}. ` +
+        'Asígnalo a mano en Mapeo de Campos.',
+    );
   }
 
-  // 3. Cruce por llave primaria respetando el mapeo.
-  const cruce = mergeDataSources<Partial<Service>>(
-    lectura.sheets?.registros ?? [],
-    lectura.api?.registros ?? [],
-    { mapeo },
-  );
+  const construccion = construirServicios(filas, mapeo);
+  avisos.push(...construccion.avisos);
 
-  const previosPorId = new Map(previousData.map((s) => [s.id, s]));
-  const newData = cruce.registros
-    .map((parcial) => completarServicio(parcial, previosPorId.get(String(parcial.id))))
-    .filter((s) => s.id !== '');
-
-  // 4. Diff contra la referencia anterior.
-  const diff = diffData(previousData, newData);
-
-  // 5. Aplicación sobre el motor. Si sólo respondió una de las dos fuentes se
-  //    usa `upsert` para no borrar lo que la otra aportaba.
-  const soloUnaFuenteActiva = lectura.errores.length === 0 && (!lectura.api || !lectura.sheets);
-  engineInstance.applyExternalServices(
-    newData,
-    lectura.errores.length > 0 || soloUnaFuenteActiva ? 'upsert' : 'reemplazar',
-  );
-
-  const origenes: string[] = [];
-  if (lectura.api) origenes.push('la API');
-  if (lectura.sheets) origenes.push('Google Sheets');
+  // Las reglas cuyo campo no vino se apagan, para no marcar todo como incompleto.
+  const desactivadas = reglasDesactivadasPorMapeo(mapeo);
+  engineInstance.setReglasSuprimidas(desactivadas.reglas);
+  engineInstance.setDatosApi(construccion.servicios, construccion.clientes);
 
   return {
-    modo: 'remoto',
-    diff,
-    cruce: cruce as MergeResult<Service>,
-    errores: lectura.errores,
-    timestamp: engineInstance.getLastSyncTime(),
-    origenes,
+    columnas: deteccion.columnas,
+    mapeo,
+    servicios: construccion.servicios,
+    avisos,
+    filas: filas.length,
+    reglasDesactivadas: desactivadas.motivos,
   };
 }
 
 /**
- * Traduce el resultado de la actualización a la lista de notificaciones que
- * se muestran: primero los errores de las fuentes que fallaron, después el
- * resumen de cambios.
+ * Ejecuta una lectura completa contra la API.
+ *
+ * `guardarComoPreferencia` deja el mapeo detectado como el guardado, para que la
+ * próxima lectura arranque de ahí.
+ */
+export async function actualizarDatos(
+  config: ApiConfig = loadApiConfig(),
+): Promise<RefreshOutcome> {
+  // 1. Referencia de la lectura anterior, antes de tocar nada.
+  const previousData = engineInstance.getServices().map((s) => ({ ...s }));
+
+  let crudo: unknown;
+  let origen: OrigenDatos = 'api';
+  let latenciaMs: number | null = null;
+  let errorApi: ApiError | null = null;
+
+  try {
+    const respuesta = await consultarApi(config);
+    crudo = respuesta.crudo;
+    latenciaMs = respuesta.ms;
+    guardarSnapshot(crudo);
+  } catch (e) {
+    errorApi = e instanceof ApiError ? e : new ApiError(String((e as Error)?.message ?? e));
+    const copia = leerSnapshot();
+    if (!copia) throw errorApi;
+    crudo = copia.d;
+    origen = 'copia-local';
+  }
+
+  const procesado = procesarRespuesta(crudo);
+  const newData = engineInstance.getServices();
+  const diff = diffData(previousData, newData);
+
+  saveMapeo(procesado.mapeo);
+
+  return {
+    origen,
+    diff,
+    columnas: procesado.columnas,
+    mapeo: procesado.mapeo,
+    reglasDesactivadas: procesado.reglasDesactivadas,
+    avisos: procesado.avisos,
+    filas: procesado.filas,
+    servicios: procesado.servicios.length,
+    latenciaMs,
+    timestamp: engineInstance.getLastSyncTime(),
+    errorApi,
+  };
+}
+
+/**
+ * Reconstruye los servicios con un mapeo corregido a mano, sin volver a
+ * consultar la API: se reutiliza la copia local de la última respuesta.
+ */
+export function reprocesarConMapeo(mapeo: MapeoCampos): RefreshOutcome | null {
+  const copia = leerSnapshot();
+  if (!copia) return null;
+
+  saveMapeo(mapeo);
+  const previousData = engineInstance.getServices().map((s) => ({ ...s }));
+  const procesado = procesarRespuesta(copia.d);
+  const diff = diffData(previousData, engineInstance.getServices());
+
+  return {
+    origen: 'copia-local',
+    diff,
+    columnas: procesado.columnas,
+    mapeo: procesado.mapeo,
+    reglasDesactivadas: procesado.reglasDesactivadas,
+    avisos: procesado.avisos,
+    filas: procesado.filas,
+    servicios: procesado.servicios.length,
+    latenciaMs: null,
+    timestamp: engineInstance.getLastSyncTime(),
+    errorApi: null,
+  };
+}
+
+/** Carga inicial desde la copia local, para pintar algo antes de la primera consulta. */
+export function cargarDesdeCopiaLocal(): RefreshOutcome | null {
+  const copia = leerSnapshot();
+  if (!copia) return null;
+
+  const procesado = procesarRespuesta(copia.d);
+
+  return {
+    origen: 'copia-local',
+    // La primera carga no reporta novedades: no hay con qué comparar.
+    diff: diffData([], engineInstance.getServices()),
+    columnas: procesado.columnas,
+    mapeo: procesado.mapeo,
+    reglasDesactivadas: procesado.reglasDesactivadas,
+    avisos: procesado.avisos,
+    filas: procesado.filas,
+    servicios: procesado.servicios.length,
+    latenciaMs: null,
+    timestamp: copia.t,
+    errorApi: null,
+  };
+}
+
+/**
+ * Traduce el resultado de la lectura a las notificaciones que se muestran:
+ * primero el aviso de que se está usando la copia local, después los problemas
+ * de mapeo, y al final el resumen de cambios.
  */
 export function notificacionesDeActualizacion(resultado: RefreshOutcome): ToastInput[] {
   const avisos: ToastInput[] = [];
 
-  for (const error of resultado.errores) {
+  if (resultado.errorApi) {
     avisos.push({
       variante: 'error',
-      titulo: 'Fuente no disponible',
-      mensaje: error.message,
+      titulo: 'Sin conexión con la API',
+      mensaje: resultado.errorApi.message,
+      detalle: ['Se está mostrando la copia local de la última lectura correcta.'],
+      duracionMs: 10000,
+    });
+  }
+
+  for (const aviso of resultado.avisos) {
+    avisos.push({
+      variante: 'warning',
+      titulo: 'Revisar el mapeo',
+      mensaje: aviso,
       duracionMs: 9000,
     });
   }
 
-  const origen = resultado.modo === 'maqueta' ? undefined : resultado.origenes[0] ?? 'la API';
-  avisos.push(...construirNotificacionesDeDiff(resultado.diff, { origen }));
+  // Si se usó la copia local, no tiene sentido hablar de cambios: son los mismos datos.
+  if (!resultado.errorApi) {
+    avisos.push(...construirNotificacionesDeDiff(resultado.diff, { origen: 'la API' }));
+  }
 
   return avisos;
 }

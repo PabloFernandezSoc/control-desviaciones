@@ -2,14 +2,18 @@ import React from 'react';
 import { Ship, AlertTriangle, DollarSign, CheckCircle2 } from 'lucide-react';
 
 interface KpiCardsProps {
-  totalEvaluated: number;
+  /** Todos los servicios que llegaron de la API y pasaron por el motor. */
+  totalAnalyzed: number;
+  /** De esos, los que además cruzan con una matriz comercial vigente. */
+  totalWithMatrix: number;
   servicesWithDeviation: number;
   marginAtRiskClp: number;
   conformityPercentage: number;
 }
 
 export const KpiCards: React.FC<KpiCardsProps> = ({
-  totalEvaluated,
+  totalAnalyzed,
+  totalWithMatrix,
   servicesWithDeviation,
   marginAtRiskClp,
   conformityPercentage
@@ -29,13 +33,13 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
         <div className="space-y-1">
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Servicios Evaluados
+            Servicios Analizados
           </p>
           <p className="text-2xl font-black text-slate-100">
-            {totalEvaluated}
+            {totalAnalyzed}
           </p>
           <p className="text-xs text-slate-500">
-            En base a matriz vigente
+            {totalWithMatrix} con matriz vigente
           </p>
         </div>
         <div className="p-3 bg-indigo-950/60 border border-indigo-800/60 rounded-lg text-indigo-400">
@@ -52,7 +56,7 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           <p className="text-2xl font-black text-rose-300">
             {servicesWithDeviation}
             <span className="text-xs font-normal text-rose-400 ml-1">
-              ({((servicesWithDeviation / Math.max(1, totalEvaluated)) * 100).toFixed(0)}%)
+              ({((servicesWithDeviation / Math.max(1, totalAnalyzed)) * 100).toFixed(0)}%)
             </span>
           </p>
           <p className="text-xs text-slate-500">

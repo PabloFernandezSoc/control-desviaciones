@@ -26,24 +26,15 @@ import { SinMatrizView } from './components/SinMatrizView';
 import { SettingsView } from './components/SettingsView';
 import { FieldMappingView } from './components/FieldMappingView';
 import { ToastProvider, useToast } from './components/Toast';
+import { InfoColumna, MapeoCampos, loadMapeo, saveMapeo } from './services/fieldMapping';
+import { ApiConfig, loadApiConfig, saveApiConfig, leerSnapshot } from './services/apiClient';
 import {
-  FieldMappingState,
-  FIELD_CATALOG,
-  MergeResult,
-  loadFieldMapping,
-  saveFieldMapping,
-} from './services/dataSources';
-import {
-  IntegrationConfig,
-  IntegrationError,
-  hayFuenteRemota,
-  loadIntegrationConfig,
-  saveIntegrationConfig,
-} from './services/apiClient';
-import {
-  ModoActualizacion,
+  OrigenDatos,
+  RefreshOutcome,
   actualizarDatos,
+  cargarDesdeCopiaLocal,
   notificacionesDeActualizacion,
+  reprocesarConMapeo,
 } from './services/refreshPipeline';
 
 export default function App() {
@@ -67,15 +58,14 @@ function AppShell() {
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [selectedDeviation, setSelectedDeviation] = useState<Deviation | null>(null);
 
-  // Integración: mapeo de origen de datos y conexión con las fuentes
-  const [fieldMapping, setFieldMapping] = useState<FieldMappingState>(() => loadFieldMapping());
-  const [integrationConfig, setIntegrationConfig] = useState<IntegrationConfig>(() =>
-    loadIntegrationConfig(),
-  );
-  const [ultimoCruce, setUltimoCruce] = useState<MergeResult<Service> | null>(null);
-  const [modoLectura, setModoLectura] = useState<ModoActualizacion>(() =>
-    hayFuenteRemota(loadIntegrationConfig()) ? 'remoto' : 'maqueta',
-  );
+  // Integración con la API: única fuente de datos de servicios
+  const [apiConfig, setApiConfig] = useState<ApiConfig>(() => loadApiConfig());
+  const [mapeo, setMapeo] = useState<MapeoCampos>(() => loadMapeo());
+  const [columnas, setColumnas] = useState<Record<string, InfoColumna>>({});
+  const [reglasDesactivadas, setReglasDesactivadas] = useState<RefreshOutcome['reglasDesactivadas']>([]);
+  const [origenDatos, setOrigenDatos] = useState<OrigenDatos | null>(null);
+  const [filasRecibidas, setFilasRecibidas] = useState(0);
+  const [latenciaMs, setLatenciaMs] = useState<number | null>(null);
 
   // Trigger state increment for re-evaluations
   const [refreshTick, setRefreshTick] = useState(0);
@@ -92,66 +82,84 @@ function AppShell() {
   const agreements = useMemo(() => engineInstance.getAgreements(), [refreshTick]);
   const settings = useMemo(() => engineInstance.getSettings(), [refreshTick]);
 
-  // Campos que hoy se resuelven contra la planilla, para el badge del sidebar.
-  const camposDesdeSheetsCount = useMemo(() => {
-    return FIELD_CATALOG.filter((campo) => {
-      const origen = campo.bloqueado
-        ? campo.origenPorDefecto
-        : fieldMapping[campo.key] ?? campo.origenPorDefecto;
-      return origen === 'sheets';
-    }).length;
-  }, [fieldMapping]);
-
-  // Persistencia del mapeo y de la configuración de las fuentes
-  const handleChangeMapeo = (nuevo: FieldMappingState) => {
-    setFieldMapping(nuevo);
-    saveFieldMapping(nuevo);
-  };
-
-  const handleChangeConfig = (nueva: IntegrationConfig) => {
-    setIntegrationConfig(nueva);
-    saveIntegrationConfig(nueva);
-    setModoLectura(hayFuenteRemota(nueva) ? 'remoto' : 'maqueta');
-    toast.mostrar({
-      variante: 'info',
-      titulo: 'Conexión actualizada',
-      mensaje: hayFuenteRemota(nueva)
-        ? 'La próxima actualización leerá las fuentes configuradas.'
-        : 'Sin fuentes activas: se seguirá trabajando sobre los datos de maqueta.',
-    });
+  /** Aplica el resultado de una lectura al estado de la pantalla. */
+  const aplicarResultado = (r: RefreshOutcome) => {
+    setLastSyncTime(r.timestamp);
+    setOrigenDatos(r.origen);
+    setColumnas(r.columnas);
+    setMapeo(r.mapeo);
+    setReglasDesactivadas(r.reglasDesactivadas);
+    setFilasRecibidas(r.filas);
+    setLatenciaMs(r.latenciaMs);
+    forceRefresh();
   };
 
   /**
-   * "Actualizar datos": lee las fuentes, cruza según el mapeo, compara contra la
-   * lectura anterior y avisa los cambios con notificaciones.
+   * "Actualizar datos": consulta el reporte de BIT, reconstruye el modelo y
+   * avisa qué cambió respecto de la lectura anterior.
    */
   const handleActualizarDatos = async () => {
     if (isSyncing) return;
     setIsSyncing(true);
 
     try {
-      const resultado = await actualizarDatos(fieldMapping, integrationConfig);
-
-      setLastSyncTime(resultado.timestamp);
-      setModoLectura(resultado.modo);
-      setUltimoCruce(resultado.cruce);
-      forceRefresh();
-
+      const resultado = await actualizarDatos(apiConfig);
+      aplicarResultado(resultado);
       toast.mostrarVarios(notificacionesDeActualizacion(resultado));
     } catch (e) {
-      const mensaje =
-        e instanceof IntegrationError
-          ? e.message
-          : `No se pudo actualizar: ${(e as Error)?.message ?? 'error desconocido'}.`;
       toast.mostrar({
         variante: 'error',
-        titulo: 'Actualización fallida',
-        mensaje,
-        detalle: ['Los datos en pantalla siguen siendo los de la última lectura correcta.'],
-        duracionMs: 9000,
+        titulo: 'No se pudo leer la API',
+        mensaje: (e as Error)?.message ?? 'Error desconocido.',
+        detalle: ['Revisa la conexión en Mapeo de Campos.'],
+        duracionMs: 10000,
       });
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  // Primera carga: se pinta la copia local si existe y se consulta la API.
+  useEffect(() => {
+    const copia = cargarDesdeCopiaLocal();
+    if (copia) aplicarResultado(copia);
+    if (apiConfig.apiKey.trim() || apiConfig.proxy.trim()) {
+      handleActualizarDatos();
+    } else if (!copia) {
+      toast.mostrar({
+        variante: 'info',
+        titulo: 'Falta configurar la conexión',
+        mensaje: 'Carga la apiKey del reporte de BIT en Mapeo de Campos para empezar.',
+        duracionMs: 9000,
+      });
+      setActiveTab('mapeo');
+    }
+    // Sólo al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleChangeApiConfig = (nueva: ApiConfig) => {
+    setApiConfig(nueva);
+    saveApiConfig(nueva);
+  };
+
+  /**
+   * El usuario corrigió una asignación: se reconstruye con la copia local, sin
+   * volver a llamar a la API.
+   */
+  const handleChangeMapeo = (nuevo: MapeoCampos) => {
+    setMapeo(nuevo);
+    saveMapeo(nuevo);
+
+    const resultado = reprocesarConMapeo(nuevo);
+    if (resultado) {
+      aplicarResultado(resultado);
+    } else {
+      toast.mostrar({
+        variante: 'info',
+        titulo: 'Sin datos que reprocesar',
+        mensaje: 'Lee la API una vez para poder aplicar el mapeo.',
+      });
     }
   };
 
@@ -202,12 +210,23 @@ function AppShell() {
     }).length;
   }, [projectionServices]);
 
+  /**
+   * Los KPI se calculan sobre TODOS los servicios analizados, no sólo los que
+   * cruzan con la matriz comercial: las reglas generales (peso, fechas,
+   * stacking) se evalúan igual sin matriz, y sus hallazgos aparecen en la
+   * bandeja. Usar sólo los servicios con matriz como denominador daba
+   * porcentajes por encima de 100.
+   */
+  const analyzedServicesCount = useMemo(
+    () => evaluatedServices.length + unmatchedServices.length,
+    [evaluatedServices.length, unmatchedServices.length],
+  );
+
   const conformityPercentage = useMemo(() => {
-    const total = evaluatedServices.length;
-    if (total === 0) return 100;
-    const conformes = total - servicesWithDeviationCount;
-    return (conformes / total) * 100;
-  }, [evaluatedServices.length, servicesWithDeviationCount]);
+    if (analyzedServicesCount === 0) return 100;
+    const conformes = analyzedServicesCount - servicesWithDeviationCount;
+    return (Math.max(0, conformes) / analyzedServicesCount) * 100;
+  }, [analyzedServicesCount, servicesWithDeviationCount]);
 
   const expiredAgreementsCount = useMemo(() => {
     return agreements.filter(a => a.estado === 'vencido').length;
@@ -259,7 +278,7 @@ function AppShell() {
         onActualizarDatos={handleActualizarDatos}
         isSyncing={isSyncing}
         lastSyncTime={lastSyncTime}
-        modoLectura={modoLectura}
+        origenDatos={origenDatos}
         openDeviationsCount={openDeviations.length}
       />
 
@@ -277,7 +296,7 @@ function AppShell() {
           projectionServicesCount={projectionServices.length}
           sinVentaCount={sinVentaCount}
           currentRole={currentRole}
-          camposDesdeSheetsCount={camposDesdeSheetsCount}
+          reglasDesactivadasCount={reglasDesactivadas.length}
         />
 
         {/* Main Content Viewport */}
@@ -296,7 +315,8 @@ function AppShell() {
           {activeTab === 'bandeja' && (
             <div className="space-y-6">
               <KpiCards
-                totalEvaluated={evaluatedServices.length}
+                totalAnalyzed={analyzedServicesCount}
+                totalWithMatrix={evaluatedServices.length}
                 servicesWithDeviation={servicesWithDeviationCount}
                 marginAtRiskClp={marginAtRiskClp}
                 conformityPercentage={conformityPercentage}
@@ -315,12 +335,7 @@ function AppShell() {
           {activeTab === 'proyeccion' && (
             <ProyeccionCargaView
               services={projectionServices}
-              clients={clients}
-              onSelectService={handleSelectServiceDirect}
-              onAddVentaLine={(serviceId, concepto, valorClp) => {
-                engineInstance.addVentaLineToService(serviceId, concepto, valorClp);
-                forceRefresh();
-              }}
+              onOpenServiceModal={handleSelectServiceDirect}
             />
           )}
 
@@ -358,11 +373,17 @@ function AppShell() {
           {/* MAPEO DE ORIGEN DE DATOS VIEW */}
           {activeTab === 'mapeo' && (
             <FieldMappingView
-              mapeo={fieldMapping}
+              columnas={columnas}
+              mapeo={mapeo}
               onChangeMapeo={handleChangeMapeo}
-              config={integrationConfig}
-              onChangeConfig={handleChangeConfig}
-              ultimoCruce={ultimoCruce}
+              reglasDesactivadas={reglasDesactivadas}
+              config={apiConfig}
+              onChangeConfig={handleChangeApiConfig}
+              onProbarConexion={handleActualizarDatos}
+              cargando={isSyncing}
+              filas={filasRecibidas}
+              servicios={engineInstance.getServices().length}
+              latenciaMs={latenciaMs}
             />
           )}
 
@@ -376,7 +397,7 @@ function AppShell() {
                 forceRefresh();
               }}
               onResetSeed={() => {
-                engineInstance.resetToSeed();
+                engineInstance.resetConfig();
                 forceRefresh();
               }}
             />

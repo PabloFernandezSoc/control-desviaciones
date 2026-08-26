@@ -13,13 +13,19 @@ import {
   DeviationType,
   ServiceState
 } from '../types';
-import { initialClients, initialAgreements, generateSeedServices, defaultSettings } from '../data/seed';
+import { initialAgreements, defaultSettings } from '../data/seed';
 
-const STORAGE_KEY_SERVICES = 'lyd_bit_services_v4_clp';
-const STORAGE_KEY_AGREEMENTS = 'lyd_bit_agreements_v4_clp';
-const STORAGE_KEY_CLIENTS = 'lyd_bit_clients_v4_clp';
-const STORAGE_KEY_SETTINGS = 'lyd_bit_settings_v4_clp';
-const STORAGE_KEY_DEVIATION_STATES = 'lyd_bit_deviation_states_v4_clp';
+/**
+ * Los servicios y los clientes NO se persisten: son un reflejo de la última
+ * respuesta de la API y se reconstruyen en cada lectura (la copia local para
+ * trabajar sin conexión la guarda `apiClient.ts`, como respuesta cruda).
+ *
+ * Sí se persiste lo que es configuración propia de la aplicación y no vive en
+ * el ERP: la matriz comercial, los umbrales, y el triaje de las desviaciones.
+ */
+const STORAGE_KEY_AGREEMENTS = 'lyd_bit_agreements_v5';
+const STORAGE_KEY_SETTINGS = 'lyd_bit_settings_v5';
+const STORAGE_KEY_DEVIATION_STATES = 'lyd_bit_deviation_states_v5';
 
 export interface SavedDeviationState {
   status: DeviationStatus;
@@ -34,6 +40,7 @@ export class EngineService {
   private settings: SystemSettings = defaultSettings;
   private savedDeviationStates: Record<string, SavedDeviationState> = {};
   private lastSyncTime: string = new Date().toISOString();
+  private reglasSuprimidas: Set<string> = new Set();
 
   constructor() {
     this.loadFromStorage();
@@ -41,50 +48,71 @@ export class EngineService {
 
   private loadFromStorage() {
     try {
-      const storedServices = localStorage.getItem(STORAGE_KEY_SERVICES);
       const storedAgreements = localStorage.getItem(STORAGE_KEY_AGREEMENTS);
-      const storedClients = localStorage.getItem(STORAGE_KEY_CLIENTS);
       const storedSettings = localStorage.getItem(STORAGE_KEY_SETTINGS);
       const storedDevStates = localStorage.getItem(STORAGE_KEY_DEVIATION_STATES);
 
-      const rawServices: Service[] = storedServices ? JSON.parse(storedServices) : generateSeedServices();
-      // Ensure unique services by ID
-      const serviceMap = new Map<string, Service>();
-      for (const s of rawServices) {
-        serviceMap.set(s.id, s);
-      }
-      this.services = Array.from(serviceMap.values());
-
       this.agreements = storedAgreements ? JSON.parse(storedAgreements) : initialAgreements;
-      this.clients = storedClients ? JSON.parse(storedClients) : initialClients;
       this.settings = storedSettings ? { ...defaultSettings, ...JSON.parse(storedSettings) } : defaultSettings;
       this.savedDeviationStates = storedDevStates ? JSON.parse(storedDevStates) : {};
-
-      if (!storedServices) {
-        this.saveAll();
-      }
     } catch (e) {
-      console.error('Error loading state from localStorage:', e);
-      this.resetToSeed();
+      console.error('Error cargando la configuración local:', e);
+      this.resetConfig();
     }
   }
 
   public saveAll() {
-    localStorage.setItem(STORAGE_KEY_SERVICES, JSON.stringify(this.services));
     localStorage.setItem(STORAGE_KEY_AGREEMENTS, JSON.stringify(this.agreements));
-    localStorage.setItem(STORAGE_KEY_CLIENTS, JSON.stringify(this.clients));
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(this.settings));
     localStorage.setItem(STORAGE_KEY_DEVIATION_STATES, JSON.stringify(this.savedDeviationStates));
   }
 
-  public resetToSeed() {
-    this.services = generateSeedServices();
+  /** Restablece la configuración local. No toca los datos, que vienen de la API. */
+  public resetConfig() {
     this.agreements = initialAgreements;
-    this.clients = initialClients;
     this.settings = defaultSettings;
     this.savedDeviationStates = {};
-    this.lastSyncTime = new Date().toISOString();
     this.saveAll();
+  }
+
+  /**
+   * Reemplaza los datos con el resultado de una lectura de la API.
+   *
+   * Los clientes se derivan de la respuesta; `tieneMatriz` se resuelve aquí
+   * cruzando contra la matriz comercial guardada localmente.
+   */
+  public setDatosApi(servicios: Service[], clientes: Client[]) {
+    const porId = new Map<string, Service>();
+    for (const s of servicios) porId.set(s.id, s);
+    this.services = Array.from(porId.values());
+
+    const conMatriz = new Set(this.agreements.map(a => a.clienteId));
+    this.clients = clientes.map(c => ({ ...c, tieneMatriz: conMatriz.has(c.id) }));
+
+    this.lastSyncTime = new Date().toISOString();
+  }
+
+  /**
+   * Reglas que no se pueden evaluar porque el reporte no trae la columna que
+   * necesitan. Se apagan en vez de marcar todos los servicios como incompletos.
+   */
+  public setReglasSuprimidas(reglas: Set<string>) {
+    this.reglasSuprimidas = reglas;
+  }
+
+  public getReglasSuprimidas(): Set<string> {
+    return this.reglasSuprimidas;
+  }
+
+  /** Reglas activas efectivas: las configuradas menos las no evaluables. */
+  private reglasEfectivas(): SystemSettings['reglasActivas'] {
+    const base = this.settings.reglasActivas;
+    if (this.reglasSuprimidas.size === 0) return base;
+    const salida = { ...base } as Record<string, boolean>;
+    for (const regla of this.reglasSuprimidas) {
+      if (regla in salida) salida[regla] = false;
+    }
+    return salida as SystemSettings['reglasActivas'];
   }
 
   public getSettings(): SystemSettings {
@@ -126,202 +154,8 @@ export class EngineService {
     return this.services.filter(s => s.estado === 'proyeccion');
   }
 
-  public addVentaLineToService(serviceId: string, concepto: string, valorClp: number) {
-    const srv = this.services.find(s => s.id === serviceId);
-    if (!srv) return;
-
-    srv.lineas.push({
-      id: `line-${Date.now()}`,
-      codigo: 'FLETE',
-      nombreConcepto: concepto || 'Venta Flete Marítimo',
-      tipo: 'venta',
-      valor: valorClp,
-      moneda: 'CLP'
-    });
-
-    if (srv.proyeccion) {
-      srv.proyeccion.tieneVentaCargada = true;
-    }
-
-    this.saveAll();
-  }
-
-  // R-EXC-03: Generación automática de líneas al seleccionar tickets
-  public toggleServiceTicket(
-    serviceId: string,
-    ticket: 'imo' | 'cuadrillas' | 'sobrepesoEspecial' | 'consolidado' | 'insulado',
-    enabled: boolean
-  ) {
-    const srv = this.services.find(s => s.id === serviceId);
-    if (!srv) return;
-
-    if (!srv.atributosEspeciales) {
-      srv.atributosEspeciales = {};
-    }
-    srv.atributosEspeciales[ticket] = enabled;
-
-    const ticketConfig: Record<string, { code: string; name: string; ventaClp: number; costoClp: number }> = {
-      imo: { code: 'EXTRA_IMO', name: 'Recargo Mercancía Peligrosa IMO', ventaClp: 280000, costoClp: 190000 },
-      cuadrillas: { code: 'EXTRA_CUADRILLA', name: 'Servicio de Cuadrilla y Estiba', ventaClp: 220000, costoClp: 160000 },
-      sobrepesoEspecial: { code: 'EXTRA_SOBREPESO', name: 'Recargo por Sobrepeso Especial', ventaClp: 180000, costoClp: 120000 },
-      consolidado: { code: 'EXTRA_CONSOLIDADO', name: 'Servicio de Consolidado Extra', ventaClp: 250000, costoClp: 170000 },
-      insulado: { code: 'EXTRA_INSULADO', name: 'Manta Térmica / Insulado', ventaClp: 150000, costoClp: 95000 },
-    };
-
-    const cfg = ticketConfig[ticket];
-    if (enabled && cfg) {
-      // Add sales & cost lines if not present
-      if (!srv.lineas.some(l => l.codigo === cfg.code && l.tipo === 'venta')) {
-        srv.lineas.push({
-          id: `line-ticket-v-${Date.now()}`,
-          codigo: cfg.code,
-          nombreConcepto: cfg.name,
-          tipo: 'venta',
-          valor: cfg.ventaClp,
-          moneda: 'CLP'
-        });
-      }
-      if (!srv.lineas.some(l => l.codigo === `${cfg.code}_COSTO` && l.tipo === 'costo')) {
-        srv.lineas.push({
-          id: `line-ticket-c-${Date.now()}`,
-          codigo: `${cfg.code}_COSTO`,
-          nombreConcepto: `${cfg.name} (Costo)`,
-          tipo: 'costo',
-          valor: cfg.costoClp,
-          moneda: 'CLP'
-        });
-      }
-    } else if (!enabled && cfg) {
-      // Remove auto-generated lines
-      srv.lineas = srv.lineas.filter(l => l.codigo !== cfg.code && l.codigo !== `${cfg.code}_COSTO`);
-    }
-
-    this.saveAll();
-  }
-
-  public updateService(service: Service) {
-    const idx = this.services.findIndex(s => s.id === service.id);
-    if (idx >= 0) {
-      this.services[idx] = service;
-    } else {
-      this.services.unshift(service);
-    }
-    this.saveAll();
-  }
-
   public getLastSyncTime(): string {
     return this.lastSyncTime;
-  }
-
-  public markSynced(): string {
-    this.lastSyncTime = new Date().toISOString();
-    return this.lastSyncTime;
-  }
-
-  /**
-   * Aplica el resultado del cruce de fuentes externas sobre el estado local.
-   *
-   * `upsert` conserva los servicios que la lectura no trajo (útil cuando la API
-   * devuelve sólo una ventana de fechas); `reemplazar` deja exactamente lo que
-   * vino en la lectura.
-   *
-   * De cada servicio existente se preserva lo que el usuario editó en la
-   * aplicación y las fuentes no gobiernan: las líneas agregadas a mano y los
-   * tickets de atributos especiales sólo se pisan si la lectura trae su propio
-   * valor para ese campo.
-   */
-  public applyExternalServices(
-    entrantes: Service[],
-    modo: 'upsert' | 'reemplazar' = 'upsert'
-  ): { total: number; nuevos: number; actualizados: number } {
-    const previos = new Map(this.services.map(s => [s.id, s]));
-    let nuevos = 0;
-    let actualizados = 0;
-
-    const fusionados: Service[] = entrantes.map(entrante => {
-      const previo = previos.get(entrante.id);
-      if (!previo) {
-        nuevos++;
-        return entrante;
-      }
-      actualizados++;
-      return {
-        ...previo,
-        ...entrante,
-        lineas: entrante.lineas ?? previo.lineas,
-        contenedores: entrante.contenedores ?? previo.contenedores,
-        ruta: entrante.ruta ?? previo.ruta,
-      };
-    });
-
-    if (modo === 'upsert') {
-      const entrantesPorId = new Set(entrantes.map(s => s.id));
-      for (const previo of this.services) {
-        if (!entrantesPorId.has(previo.id)) fusionados.push(previo);
-      }
-    }
-
-    this.services = fusionados;
-    this.markSynced();
-    this.saveAll();
-
-    return { total: this.services.length, nuevos, actualizados };
-  }
-
-  /**
-   * Lectura de maqueta, para cuando no hay ninguna fuente remota configurada.
-   *
-   * Genera movimiento real —un servicio nuevo en proyección y el avance de
-   * estado de un par de servicios existentes— para que el diff y las
-   * notificaciones se puedan ver funcionando sin la API. "Restablecer datos"
-   * en Configuración devuelve la maqueta a su estado original.
-   */
-  public simulateSync(): { timestamp: string; count: number } {
-    const avanceDeEstado: Partial<Record<ServiceState, ServiceState>> = {
-      proyeccion: 'borrador',
-      borrador: 'confirmado',
-      confirmado: 'en_transito',
-      en_transito: 'cerrado',
-    };
-
-    // Avanza los dos servicios más antiguos que todavía tengan a dónde avanzar.
-    let avanzados = 0;
-    for (const srv of this.services) {
-      if (avanzados >= 2) break;
-      const siguiente = avanceDeEstado[srv.estado];
-      if (!siguiente) continue;
-      srv.estado = siguiente;
-      if (srv.proyeccion) {
-        srv.proyeccion.estAct = siguiente.toUpperCase().replace('_', ' ');
-      }
-      avanzados++;
-    }
-
-    // Un servicio nuevo, clonado del primero en proyección para mantener la
-    // forma completa del registro.
-    const plantilla = this.services.find(s => s.proyeccion) ?? this.services[0];
-    if (plantilla) {
-      const clon: Service = JSON.parse(JSON.stringify(plantilla));
-      clon.id = `SRV-${Math.floor(90000 + Math.random() * 9000)}`;
-      clon.estado = 'proyeccion';
-      clon.fechaCreacion = new Date().toISOString().slice(0, 10);
-      clon.lineas = clon.lineas.filter(l => l.tipo === 'costo');
-      if (clon.proyeccion) {
-        clon.proyeccion.numReg = Math.floor(90000 + Math.random() * 9000);
-        clon.proyeccion.referencia = clon.id;
-        clon.proyeccion.tieneVentaCargada = false;
-        clon.proyeccion.estAct = 'PROYECCION DE CARGA';
-      }
-      this.services.unshift(clon);
-    }
-
-    this.markSynced();
-    this.saveAll();
-
-    return {
-      timestamp: this.lastSyncTime,
-      count: this.services.length
-    };
   }
 
   // ==========================================
@@ -339,11 +173,12 @@ export class EngineService {
     const toleranciaAbsoluta = this.settings.toleranciaAbsolutaClp || 25000;
     const { 
       toleranciaPorcentaje, 
-      reglasActivas, 
       umbralHorasEstadia = 4, 
       umbralDiasAlmacenaje = 2, 
       topePesoKg = 25000 
     } = this.settings;
+    // Las reglas cuyo campo no vino en el reporte quedan apagadas.
+    const reglasActivas = this.reglasEfectivas();
 
     const referenceDate = new Date('2026-08-24');
 

@@ -20,13 +20,11 @@ import {
 
 interface ProyeccionCargaViewProps {
   services: Service[];
-  onUpdateService: (service: Service) => void;
   onOpenServiceModal: (service: Service) => void;
 }
 
 export const ProyeccionCargaView: React.FC<ProyeccionCargaViewProps> = ({
   services,
-  onUpdateService,
   onOpenServiceModal
 }) => {
   const [activeTab, setActiveTab] = useState<'proyeccion' | 'reefer' | 'dry' | 'lcl' | 'en_curso' | 'stock' | 'terminados'>('proyeccion');
@@ -39,7 +37,6 @@ export const ProyeccionCargaView: React.FC<ProyeccionCargaViewProps> = ({
   const [filterSoloSinVenta, setFilterSoloSinVenta] = useState(false);
 
   // Quick Load Sale Modal State
-  const [selectedServiceToLoadSale, setSelectedServiceToLoadSale] = useState<Service | null>(null);
   const [customSaleVal, setCustomSaleVal] = useState<number>(0);
 
   // Filter services for Projection
@@ -72,35 +69,6 @@ export const ProyeccionCargaView: React.FC<ProyeccionCargaViewProps> = ({
 
   const totalProyeccionCount = projectionServices.length;
   const sinVentaCount = projectionServices.filter(s => !s.proyeccion?.tieneVentaCargada && !s.lineas.some(l => l.tipo === 'venta')).length;
-
-  // Handle loading quick sale line
-  const handleConfirmLoadSale = () => {
-    if (!selectedServiceToLoadSale) return;
-    const p = selectedServiceToLoadSale.proyeccion;
-    const saleAmount = customSaleVal || p?.tarifaPactadaClp || 500000;
-
-    const newLine: ServiceLine = {
-      id: `sale_${Date.now()}`,
-      codigo: 'FLETE',
-      nombreConcepto: 'Tarifa Venta Carga Local',
-      tipo: 'venta',
-      valor: saleAmount,
-      moneda: 'CLP'
-    };
-
-    const updated: Service = {
-      ...selectedServiceToLoadSale,
-      estado: 'confirmado',
-      lineas: [...selectedServiceToLoadSale.lineas, newLine],
-      proyeccion: p ? {
-        ...p,
-        tieneVentaCargada: true
-      } : undefined
-    };
-
-    onUpdateService(updated);
-    setSelectedServiceToLoadSale(null);
-  };
 
   const formatClp = (val: number) => {
     return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(val);
@@ -463,14 +431,12 @@ export const ProyeccionCargaView: React.FC<ProyeccionCargaViewProps> = ({
                     <div className="flex items-center gap-2 pt-1">
                       {!tieneVenta ? (
                         <button
-                          onClick={() => {
-                            setSelectedServiceToLoadSale(srv);
-                            setCustomSaleVal(p?.tarifaPactadaClp || 500000);
-                          }}
+                          onClick={() => onOpenServiceModal(srv)}
                           className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 px-2 rounded-lg text-xs transition flex items-center justify-center gap-1 shadow-sm"
+                          title="La venta se carga en BIT; aquí sólo se detecta que falta"
                         >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>+ Cargar Venta BIT</span>
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <span>Falta cargar venta en BIT</span>
                         </button>
                       ) : (
                         <button
@@ -491,69 +457,6 @@ export const ProyeccionCargaView: React.FC<ProyeccionCargaViewProps> = ({
         )}
       </div>
 
-      {/* MODAL FOR LOADING MISSING SALE LINE INTO BIT */}
-      {selectedServiceToLoadSale && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg">
-                  <Plus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-100 text-base">Cargar Venta en BIT</h3>
-                  <p className="text-xs text-slate-400">Reg: N° {selectedServiceToLoadSale.proyeccion?.numReg}</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setSelectedServiceToLoadSale(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-300">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1">
-                <div><span className="text-slate-500">Cliente:</span> <strong className="text-white">{selectedServiceToLoadSale.clienteNombre}</strong></div>
-                <div><span className="text-slate-500">Mandante:</span> {selectedServiceToLoadSale.proyeccion?.mandante}</div>
-                <div><span className="text-slate-500">Tarifa Acordada:</span> <span className="font-mono text-emerald-400 font-bold">{formatClp(selectedServiceToLoadSale.proyeccion?.tarifaPactadaClp || 0)}</span></div>
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-medium mb-1">
-                  Monto Venta a Cargar (en CLP):
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-slate-400 font-mono">$</span>
-                  <input
-                    type="number"
-                    value={customSaleVal}
-                    onChange={(e) => setCustomSaleVal(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-7 pr-3 py-2 text-white font-mono text-sm focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
-              <button
-                onClick={() => setSelectedServiceToLoadSale(null)}
-                className="w-1/2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl text-xs transition"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleConfirmLoadSale}
-                className="w-1/2 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-xl text-xs transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-1.5"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Confirmar Carga</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

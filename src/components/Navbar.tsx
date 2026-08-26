@@ -8,8 +8,8 @@ interface NavbarProps {
   onActualizarDatos: () => void;
   isSyncing: boolean;
   lastSyncTime: string;
-  /** Origen efectivo de la última lectura, para que se note si es maqueta o API. */
-  modoLectura: 'remoto' | 'maqueta';
+  /** De dónde salieron los datos en pantalla: la API o la copia local. */
+  origenDatos: 'api' | 'copia-local' | null;
   openDeviationsCount: number;
 }
 
@@ -19,7 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onActualizarDatos,
   isSyncing,
   lastSyncTime,
-  modoLectura,
+  origenDatos,
   openDeviationsCount
 }) => {
   const formatTime = (isoStr: string) => {
@@ -62,17 +62,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Última lectura: <strong className="text-slate-100">{formatTime(lastSyncTime)}</strong></span>
             <span
               className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                modoLectura === 'remoto'
-                  ? 'bg-indigo-950 text-indigo-300 border border-indigo-800'
-                  : 'bg-slate-700/60 text-slate-300 border border-slate-600'
+                origenDatos === 'api'
+                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  : origenDatos === 'copia-local'
+                    ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                    : 'bg-slate-700/60 text-slate-300 border border-slate-600'
               }`}
               title={
-                modoLectura === 'remoto'
-                  ? 'Los datos provienen de las fuentes configuradas'
-                  : 'Sin fuentes configuradas: se trabaja sobre los datos de maqueta'
+                origenDatos === 'api'
+                  ? 'Datos leídos directamente del reporte de BIT'
+                  : origenDatos === 'copia-local'
+                    ? 'La API no respondió: se muestra la copia local de la última lectura'
+                    : 'Todavía no se ha leído la API'
               }
             >
-              {modoLectura === 'remoto' ? 'En línea' : 'Maqueta'}
+              {origenDatos === 'api' ? 'API' : origenDatos === 'copia-local' ? 'Copia local' : 'Sin datos'}
             </span>
           </div>
 

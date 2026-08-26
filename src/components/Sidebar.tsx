@@ -23,8 +23,8 @@ interface SidebarProps {
   projectionServicesCount: number;
   sinVentaCount: number;
   currentRole: Role;
-  /** Campos que hoy se leen desde Google Sheets, para el badge del mapeo. */
-  camposDesdeSheetsCount: number;
+  /** Reglas apagadas porque falta su columna en el reporte. */
+  reglasDesactivadasCount: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -37,7 +37,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   projectionServicesCount,
   sinVentaCount,
   currentRole,
-  camposDesdeSheetsCount
+  reglasDesactivadasCount
 }) => {
   return (
     <aside className="w-64 bg-slate-900 border-r border-slate-800 text-slate-300 flex flex-col justify-between shrink-0">
@@ -185,14 +185,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <div className="flex items-center gap-3">
               <Link2 className="w-4 h-4 text-indigo-400" />
-              <span>Mapeo de Datos</span>
+              <span>Mapeo de Campos</span>
             </div>
-            <span
-              className="text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800/80 px-1.5 py-0.5 rounded"
-              title="Campos que se siguen leyendo desde Google Sheets"
-            >
-              {camposDesdeSheetsCount} Sheets
-            </span>
+            {reglasDesactivadasCount > 0 ? (
+              <span
+                className="flex items-center gap-1 text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800/80 px-1.5 py-0.5 rounded"
+                title="Reglas que no se evalúan porque falta su columna en el reporte"
+              >
+                <AlertTriangle className="w-3 h-3" />
+                {reglasDesactivadasCount}
+              </span>
+            ) : (
+              <span className="text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded">
+                API
+              </span>
+            )}
           </button>
 
           {/* Configuración (Solo visible o resaltada para Admin, accesible) */}
