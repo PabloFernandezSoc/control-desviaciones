@@ -398,6 +398,36 @@ prueba('las líneas se identifican con el id real del extracosto', () => {
   assert.ok(s1.lineas.some((l) => l.id.includes('9002')));
 });
 
+prueba('los datos del servicio se leen SÓLO de la fila del flete', () => {
+  // El extracosto trae peso y tipo distintos: no deben filtrarse al servicio.
+  const mezcla = [
+    { ServicioID: 'A', ExtraCostoID: '0', NombreCliente: 'X', FechaServicio: '2026-08-01',
+      TotalVenta: '100', Producto: 'SAI-SCL-SAI', ContPeso: '18000', ServicioTipo: 'DIRECTO', Puerto: 'SAI' },
+    { ServicioID: 'A', ExtraCostoID: '9', NombreCliente: 'X', FechaServicio: '2026-08-01',
+      TotalVenta: '20', Producto: 'SOBREPESO', ContPeso: '99999', ServicioTipo: 'DIFERIDO', Puerto: 'VAP' },
+  ];
+  const m = autoMapear(mezcla).mapeo;
+  const r = construirServicios(mezcla, m, crearClasificador());
+  assert.equal(r.servicios.length, 1);
+  const s = r.servicios[0];
+  assert.equal(s.pesoKg, 18000, 'el peso sale del flete, no del extracosto');
+  assert.equal(s.modalidad, 'directo', 'el tipo de servicio sale del flete');
+  assert.equal(s.puerto, 'SAI', 'el puerto sale del flete');
+});
+
+prueba('sin fila de flete el grupo es huérfano, no se toma un extracosto', () => {
+  // Con la columna de id mapeada no se acepta un reemplazo: sería leer los
+  // datos de un extracosto como si fueran del servicio.
+  const soloExtras = [
+    { ServicioID: 'B', ExtraCostoID: '11', NombreCliente: 'Y', FechaServicio: '2026-08-01', TotalVenta: '50', Producto: 'ALMACENAJE M2', ContPeso: '77777' },
+    { ServicioID: 'B', ExtraCostoID: '12', NombreCliente: 'Y', FechaServicio: '2026-08-01', TotalVenta: '30', Producto: 'SOBREPESO', ContPeso: '88888' },
+  ];
+  const m = autoMapear(soloExtras).mapeo;
+  const r = construirServicios(soloExtras, m, crearClasificador());
+  assert.equal(r.servicios.length, 0, 'no se inventa un servicio desde extracostos');
+  assert.equal(r.huerfanos, 2);
+});
+
 prueba('un id de extracosto en cero cuenta como flete, no como extra', () => {
   const conCero = [
     { ServicioID: 'A', ExtraCostoID: '0', NombreCliente: 'X', FechaServicio: '2026-07-01', TotalVenta: '100', Concepto: 'Flete' },

@@ -173,10 +173,22 @@ export function construirServicios(
   for (const [id, delGrupo] of grupos) {
     const marcas = delGrupo.map((f) => esExtra(f, mapeo));
 
-    // La fila del flete es la que no está marcada como extracosto, venga en la
-    // posición que venga dentro del grupo.
+    /**
+     * La fila del flete es la que tiene el id de extracosto en cero, venga en
+     * la posición que venga dentro del grupo.
+     *
+     * Todos los datos del servicio —peso, tipo de servicio, puerto, nave— se
+     * leen de esa fila y sólo de esa. Una fila de extracosto describe el cobro,
+     * no el servicio: tomar sus campos daría lecturas de un extracosto como si
+     * fueran del servicio. Por eso, cuando la columna del id de extracosto está
+     * mapeada, no se acepta ningún reemplazo: si no hay fila con cero, el grupo
+     * es huérfano.
+     */
     let idxBase = marcas.findIndex((m) => m === false);
-    if (idxBase < 0) idxBase = marcas.findIndex((m) => m === null);
+    if (idxBase < 0 && !mapeo.extracostoId) {
+      // Sin esa columna hay que conformarse con la heurística.
+      idxBase = marcas.findIndex((m) => m === null);
+    }
     if (idxBase < 0) {
       // Sólo extracostos: no hay flete al que colgarlos.
       huerfanos += delGrupo.length;
